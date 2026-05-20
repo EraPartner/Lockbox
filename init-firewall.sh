@@ -20,6 +20,7 @@ set -uo pipefail
 PROXY_USER="proxy"
 SENTINEL="/run/egress-firewall-ok"
 INBOUND_FILE="/etc/egress/inbound-ports"
+EXTRA_RULES="/etc/egress/extra-rules.sh"   # optional per-project OUTPUT exceptions
 
 # Stale sentinel must never outlive a re-apply.
 rm -f "$SENTINEL" 2>/dev/null || true
@@ -62,6 +63,11 @@ if [[ -r "$INBOUND_FILE" ]]; then
     [[ "$port" =~ ^[0-9]+$ ]] && iptables -A INPUT -p tcp --dport "$port" -j ACCEPT
   done < "$INBOUND_FILE"
 fi
+
+# Project-specific extra OUTPUT allows (e.g. Brain's host-Ollama hole), run AFTER
+# the base allows and BEFORE the catch-all deny. Optional, project-owned file —
+# each rule it adds is a deliberate exception.
+[[ -x "$EXTRA_RULES" ]] && "$EXTRA_RULES" || true
 
 # Logged-DROP for everything else, rate-limited. Visible via `dmesg | grep egress-deny`.
 iptables -N EGRESS_DENY
