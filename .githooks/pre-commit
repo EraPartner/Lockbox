@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Tracked pre-commit gate for devcontainer-egress. Enabled with:
+#   git config core.hooksPath .githooks
+# (sync.sh sets this up is NOT automatic — run the line once per clone, or it is
+# already set in this repo's .git/config.)
+#
+# 1) Leak scan: no hardcoded secrets / private keys in the committed sandbox files.
+# 2) Drift check: every vendored copy + generated allowlist is in sync with the
+#    canonical sources (catches a hand-edited init-firewall.sh/squid.conf/allowlist
+#    or a stale baked allowlist before it is committed).
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")/.." && pwd -P)"
+
+"$HERE/audit.sh"
+"$HERE/sync.sh" --check

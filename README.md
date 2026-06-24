@@ -1,27 +1,71 @@
 # Canonical devcontainer egress lock
 
-Single source of truth for the egress firewall + squid proxy shared by the
-Brain, Vision, Watchman, and git-agent devcontainers. Previously each carried its
-own copy of `init-firewall.sh` + `squid.conf`; now you edit them **here** and run
-`./sync.sh` (one edit instead of four).
+Single source of truth for the egress firewall + squid proxy (and the shared
+host-side launcher helpers) used by the Brain, Vision, Watchman, Napoleon-relay,
+git-agent, and generic `sandbox` devcontainers. Previously each carried its own
+copy of `init-firewall.sh` + `squid.conf`; now you edit them **here** and run
+`./sync.sh` (one edit instead of six).
+
+The target list lives in `paths.sh` (shared by `sync.sh` and `audit.sh`) so it
+lives in ONE place — keep it current if a project moves, or the vendored copies
+silently stop updating (which is exactly the bug that left 3 of 4 containers
+stale before this was introduced).
 
 ## Files
 
 - `init-firewall.sh` — iptables default-deny, egress allowed only for the squid
   proxy UID. Identical everywhere; per-project bits are data files it reads:
-  - `/etc/squid/allowlist.txt` — the hostname allowlist (per project, NOT synced).
+  - `/etc/squid/allowlist.txt` — the hostname allowlist. **Generated** by
+    `sync.sh` as `base-allowlist.txt` + the project's `allowlist.extra.txt`.
   - `/etc/egress/inbound-ports` — optional, one TCP port per line, for projects
     that publish services (Vision/Watchman). Absent = no inbound (Brain/git-agent).
 - `squid.conf` — peek+splice SNI allowlist proxy. Identical everywhere.
-- `sync.sh` — copies the two files into each project's `.devcontainer/`.
+- `base-allowlist.txt` — the shared egress floor (Anthropic API + GitHub) needed
+  by every container. Keep minimal; adding here widens egress for all six.
+- `launcher-common.sh` — shared host-side launcher helpers (claude-config
+  staging, Keychain credential forwarding, autosync-on-exit trap) sourced by
+  every launcher (`bin/claude`, `bin/agent`, `bin/git-agent`, `bin/dev`).
+  Vendored into each `.devcontainer/` by `sync.sh`; edit it HERE, not the copies.
+- `paths.sh` — the canonical list of managed `.devcontainer` dirs, sourced by
+  both `sync.sh` and `audit.sh`.
+- `sync.sh` — copies `init-firewall.sh`/`squid.conf`/`launcher-common.sh` into
+  each project's `.devcontainer/` and generates each project's baked
+  `allowlist.txt` from `base-allowlist.txt` + that project's `allowlist.extra.txt`.
+
+  Not vendored: each project's `bin/verify-pins` (launch-integrity check) is a
+  per-project, self-contained copy because its baked pin-manifest path differs.
+- `audit.sh` — leak check: scans the committed devcontainer/egress/installer
+  files for hardcoded secrets and private keys (exit non-zero on a hit). The
+  sandboxes forward credentials at runtime and must never bake them in; run this
+  before committing (it's a good pre-commit hook). Verified to catch GitHub/
+  Anthropic/AWS/Slack token formats and `BEGIN ... PRIVATE KEY` blocks.
+
+## Allowlist model (base + overlay)
+
+Each project keeps only its *deltas* in `.devcontainer/allowlist.extra.txt`; the
+6 common Anthropic/GitHub hosts live once in `base-allowlist.txt`. `sync.sh`
+concatenates them into the baked `.devcontainer/allowlist.txt` (which is
+GENERATED — do not hand-edit). To change egress: edit `base-allowlist.txt` (all
+containers) or a project's `allowlist.extra.txt` (one container), then `./sync.sh`
+and rebuild. squid ignores `#`-comment and blank lines, so comments are safe.
 
 ## Workflow
 
+The fleet runs on Apple's `container` (not Docker/Compose). Each project's
+`.devcontainer/bin/<launcher>` does `container build` + `container run`; there are
+no `compose.yaml` files (the old Docker Compose configs are archived under
+`~/.claude-sandbox/docker-compose-archive/`).
+
 ```sh
-# edit init-firewall.sh or squid.conf here, then:
+# edit init-firewall.sh / squid.conf / base-allowlist.txt here, OR a project's
+# .devcontainer/allowlist.extra.txt, then:
 ./sync.sh
-# rebuild the affected containers so the baked copies update:
-devcontainer up --remove-existing-container --workspace-folder <project> [--config ...]
+# rebuild the affected container so the baked copies update — force-recreate via
+# the launcher's REBUILD env (each launcher rebuilds its own image, cached/fast):
+#   NAPOLEON_REBUILD=1 napoleon-claude   ·   WATCHMAN_REBUILD=1 watchman-claude
+#   DEV_SANDBOX_REBUILD=1 dev            ·   GIT_AGENT_REBUILD=1 git-agent
+#   VISION_REBUILD=1 vision-claude       ·   BRAIN_REBUILD=1 brain-claude
+# or directly:  container build -t <image> <project>/.devcontainer
 ```
 
 ## Per-project wiring (set once)

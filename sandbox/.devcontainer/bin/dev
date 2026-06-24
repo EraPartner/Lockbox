@@ -1,0 +1,238 @@
+#!/usr/bin/env bash
+# dev — route the CURRENT directory into the generic full-dev sandbox.
+#
+# Resolves the target (current git repo root, else $PWD), hashes its path so each
+# target gets its own container + private home volumes, mounts it READ-WRITE, and
+# opens claude inside the hardened image (egress-locked, PreToolUse guard,
+# launch-integrity pins). apple/container — Docker-free (formerly a Docker Compose launcher).
+#
+#   dev                 # run claude against $PWD's project
+#   dev --version       # forward any args to claude
+#   DEV_SANDBOX_PORTS="8787 3000" dev   # publish container ports to the host
+#   DEV_SANDBOX_SHELL=1 dev             # open a bash shell instead of claude
+#   DEV_SANDBOX_REBUILD=1 dev           # force image+container refresh
+#
+# Per-target egress overlay: if the target has .sandbox-allowlist.txt (or
+# .devcontainer/allowlist.extra.txt), its hosts are added on top of the base.
+set -euo pipefail
+
+# --- 0) Resolve target dir (git repo root, else CWD) -------------------------
+TARGET="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || true)"
+[[ -z "$TARGET" ]] && TARGET="$PWD"
+TARGET="$(cd "$TARGET" && pwd -P)"
+
+# Refuse dangerously broad / sensitive mounts.
+deny() { echo "dev: refusing to mount '$TARGET' — $1. cd into a project subdir." >&2; exit 1; }
+[[ -z "$TARGET" || "$TARGET" == "/" ]] && deny "the filesystem root"
+[[ "$TARGET" == "$HOME" ]]             && deny "your home directory"
+if [[ "$TARGET" == "/Users" || "$TARGET" =~ ^/Users/[^/]+$ ]]; then
+  deny "a home root (too broad)"
+fi
+case "$TARGET" in
+  "$HOME"/.ssh|"$HOME"/.aws|"$HOME"/.gnupg|"$HOME"/.config|"$HOME"/.kube|"$HOME"/.docker|"$HOME"/Library|"$HOME"/Library/*)
+    deny "a sensitive home subdirectory" ;;
+esac
+
+HOST_PWD="$(pwd -P)"
+DC="$(cd "$(dirname "$0")/.." && pwd -P)"
+
+command -v container >/dev/null 2>&1 || { echo "dev: apple/container not installed." >&2; exit 1; }
+container system status >/dev/null 2>&1 || { echo "dev: container system not started — run: container system start" >&2; exit 1; }
+
+HASH="$(printf '%s' "$TARGET" | shasum 2>/dev/null | cut -c1-12 || echo target)"
+NAME="dev-sandbox-$HASH"
+IMAGE="dev-sandbox:latest"
+STAGE_NAME="dev-sandbox-$HASH"
+STAGE_DIR="$HOME/.claude-sandbox/stage/$STAGE_NAME"
+mkdir -p "$STAGE_DIR"
+
+# --- 1) Effective egress allowlist = baked base + this target's overlay -------
+# F2: the overlay is read from the TARGET repo — the SAME untrusted content this
+# sandbox runs, in the RW workspace an in-container agent can write. Letting it
+# silently widen egress next launch is a self-escalation hole. So: surface the
+# overlay's effective hosts and require interactive confirmation before they take
+# effect. FAIL CLOSED — on a non-interactive (headless/piped) launch we can't
+# prompt, so the overlay is IGNORED and only the trusted base allowlist applies.
+ALLOWLIST_OUT="$STAGE_DIR/allowlist.txt"
+OLD_ALLOWLIST_SUM=""
+[[ -f "$ALLOWLIST_OUT" ]] && OLD_ALLOWLIST_SUM="$(shasum "$ALLOWLIST_OUT" 2>/dev/null | cut -d' ' -f1)"
+
+overlay_files=()
+for overlay in "$TARGET/.sandbox-allowlist.txt" "$TARGET/.devcontainer/allowlist.extra.txt"; do
+  [[ -f "$overlay" ]] && overlay_files+=("$overlay")
+done
+
+USE_OVERLAY=1
+if (( ${#overlay_files[@]} > 0 )); then
+  overlay_hosts="$(cat "${overlay_files[@]}" 2>/dev/null | grep -vE '^[[:space:]]*#' | grep -vE '^[[:space:]]*$' | sort -u || true)"
+  if [[ -n "$overlay_hosts" ]]; then
+    echo "dev: this target ships an egress allowlist OVERLAY (read from the workspace —" >&2
+    echo "     the same untrusted content this sandbox runs). It would ADD these hosts:" >&2
+    echo "$overlay_hosts" | sed 's/^/       + /' >&2
+    for f in "${overlay_files[@]}"; do echo "     (from ${f#$TARGET/})" >&2; done
+    if [[ -t 0 && -t 1 ]]; then
+      ans=""
+      printf 'dev: allow these extra egress hosts for THIS launch? [y/N] ' >&2
+      read -r ans || true
+      [[ "$ans" == [yY] || "$ans" == [yY][eE][sS] ]] || { USE_OVERLAY=0; echo "dev: overlay declined — base allowlist only." >&2; }
+    else
+      USE_OVERLAY=0
+      echo "dev: non-interactive launch — IGNORING the overlay (base allowlist only)." >&2
+      echo "     Re-run in a terminal to approve, or vet it and move it out of the workspace." >&2
+    fi
+  fi
+fi
+
+{
+  cat "$DC/allowlist.txt" 2>/dev/null || true
+  if (( USE_OVERLAY )); then
+    for overlay in ${overlay_files[@]+"${overlay_files[@]}"}; do
+      echo "# ==== overlay: ${overlay#$TARGET/} ===="
+      cat "$overlay"
+    done
+  fi
+} > "$ALLOWLIST_OUT"
+
+NEW_ALLOWLIST_SUM="$(shasum "$ALLOWLIST_OUT" 2>/dev/null | cut -d' ' -f1)"
+ALLOWLIST_CHANGED=0
+[[ "$OLD_ALLOWLIST_SUM" != "$NEW_ALLOWLIST_SUM" ]] && ALLOWLIST_CHANGED=1
+
+# --- 2) Inbound ports → -p flags + the firewall's inbound-ports file ----------
+INBOUND_OUT="$STAGE_DIR/inbound-ports"
+OLD_INBOUND=""
+[[ -f "$INBOUND_OUT" ]] && OLD_INBOUND="$(cat "$INBOUND_OUT" 2>/dev/null || true)"
+: > "$INBOUND_OUT"
+PORT_FLAGS=()
+if [[ -n "${DEV_SANDBOX_PORTS:-}" ]]; then
+  for p in ${DEV_SANDBOX_PORTS//,/ }; do
+    [[ "$p" =~ ^[0-9]+$ ]] || { echo "dev: ignoring non-numeric port '$p'" >&2; continue; }
+    PORT_FLAGS+=(-p "127.0.0.1:$p:$p")
+    echo "$p" >> "$INBOUND_OUT"
+  done
+fi
+NEW_INBOUND="$(cat "$INBOUND_OUT" 2>/dev/null || true)"
+
+# --- 3) Stage a sanitized ~/.claude for the RO bind mount --------------------
+# shellcheck source=../launcher-common.sh
+source "$DC/launcher-common.sh"
+sandbox_stage_claude_config "$STAGE_NAME"
+
+# --- 4) Build (skip when the image already exists, unless rebuild requested) --
+# F7: `container build` is cached but still spins up the builder VM on every launch
+# (startup latency). Skip it when the image already exists AND no rebuild was asked
+# for. Trade-off: a sync.sh change to the BAKED files (init-firewall.sh, squid.conf,
+# entrypoint, post-*) then only lands on the next DEV_SANDBOX_REBUILD=1 — the
+# allowlist + inbound-ports are bind-mounted, so those stay live regardless.
+if [[ "${DEV_SANDBOX_REBUILD:-0}" == 1 ]] || ! container image inspect "$IMAGE" >/dev/null 2>&1; then
+  container build -t "$IMAGE" "$DC" >/dev/null
+  # Free the ~2GB build-shim RAM now the image is built; it auto-restarts on the
+  # next build. Set SANDBOX_KEEP_BUILDER=1 to leave it up (rapid rebuilds).
+  [[ -n "${SANDBOX_KEEP_BUILDER:-}" ]] || container builder stop >/dev/null 2>&1 || true
+fi
+
+# --- 5) Idempotent run: reuse running / start stopped / else create ----------
+echo "dev: target $TARGET  (container $NAME)" >&2
+if [[ "${DEV_SANDBOX_REBUILD:-0}" == 1 ]]; then
+  container rm -f "$NAME" >/dev/null 2>&1 || true
+fi
+PORTS_CHANGED_MSG="dev: WARN: DEV_SANDBOX_PORTS changed, but the -p bindings and the firewall's
+     inbound-ports are fixed at CREATE — rebuild to apply: DEV_SANDBOX_REBUILD=1 $0"
+if container ls -q 2>/dev/null | grep -qx "$NAME"; then
+  # Reuse RUNNING. squid loaded its ACLs at config parse; the bind-mounted
+  # allowlist is already live in-container but won't take effect until squid
+  # reconfigures. WIDENING needs this; NARROWING would SILENTLY not apply (a
+  # security gap) — so reconfigure whenever the staged allowlist content changed. (F1)
+  if (( ALLOWLIST_CHANGED )); then
+    echo "dev: egress allowlist changed — reloading squid in the running container..." >&2
+    container exec "$NAME" squid -k reconfigure 2>/dev/null \
+      || echo "dev: WARN: squid reconfigure failed; apply the new allowlist with DEV_SANDBOX_REBUILD=1 $0" >&2
+  fi
+  [[ "$OLD_INBOUND" != "$NEW_INBOUND" ]] && echo "$PORTS_CHANGED_MSG" >&2
+elif container ls -aq 2>/dev/null | grep -qx "$NAME"; then
+  container start "$NAME" >/dev/null
+  [[ "$OLD_INBOUND" != "$NEW_INBOUND" ]] && echo "$PORTS_CHANGED_MSG" >&2
+else
+  container run -d --name "$NAME" \
+    --init \
+    --cap-drop ALL \
+    --cap-add NET_ADMIN --cap-add CHOWN --cap-add DAC_OVERRIDE \
+    --cap-add FOWNER --cap-add SETUID --cap-add SETGID \
+    -m 6g -c 4 \
+    --tmpfs /tmp --tmpfs /var/tmp \
+    "${PORT_FLAGS[@]}" \
+    -e DEVCONTAINER=true \
+    -e DEV_SANDBOX=true \
+    -e DISABLE_TELEMETRY=1 \
+    -e DISABLE_ERROR_REPORTING=1 \
+    -e BASH_ENV=/home/dev/.safe-chain/scripts/init-posix.sh \
+    -e NODE_USE_ENV_PROXY=1 \
+    -e HTTP_PROXY=http://127.0.0.1:3128 \
+    -e HTTPS_PROXY=http://127.0.0.1:3128 \
+    -e http_proxy=http://127.0.0.1:3128 \
+    -e https_proxy=http://127.0.0.1:3128 \
+    -e NO_PROXY=localhost,127.0.0.1,::1 \
+    -e no_proxy=localhost,127.0.0.1,::1 \
+    -v "$TARGET:/workspaces/project" \
+    -v "dev-sandbox-claude-$HASH:/home/dev/.claude" \
+    -v "dev-sandbox-config-$HASH:/home/dev/.config" \
+    -v "dev-sandbox-local-$HASH:/home/dev/.local" \
+    -v "$HOME/.claude-sandbox/stage/$STAGE_NAME:/home/dev/.claude-stage:ro" \
+    -v "$HOME/.claude/hooks/guard.mjs:/usr/local/share/claude-guard/guard.mjs:ro" \
+    -v "$HOME/.claude/hooks/managed-settings.json:/etc/claude-code/managed-settings.json:ro" \
+    -v "$HOME/.gitconfig:/home/dev/.gitconfig-host:ro" \
+    -v "$ALLOWLIST_OUT:/etc/squid/allowlist.txt:ro" \
+    -v "$INBOUND_OUT:/etc/egress/inbound-ports:ro" \
+    "$IMAGE" >/dev/null
+fi
+CID="$NAME"
+
+# Wait for the egress proxy (entrypoint applies firewall → squid).
+container exec "$NAME" bash -lc 'for i in $(seq 1 30); do (exec 3<>/dev/tcp/127.0.0.1/3128) 2>/dev/null && break; sleep 1; done' || true
+
+# --- 6) Replay lifecycle as dev (post-create once, post-start every start) ----
+container exec --user dev "$NAME" bash -lc '
+  set -e
+  [[ -f /home/dev/.postcreate-done ]] || { bash /usr/local/share/dev-sandbox/post-create.sh && touch /home/dev/.postcreate-done; }
+  bash /usr/local/share/dev-sandbox/post-start.sh'
+
+# --- 7) Forward the Claude LLM token (no git push token in this box) ----------
+EXEC_ENV=()
+sandbox_forward_llm_creds "dev-sandbox-claude-code-token"
+
+# --- 8) Launch-integrity gate (clean shell so safe-chain can't shadow paths) --
+if ! container exec --user dev -e BASH_ENV= "$NAME" dev-sandbox-verify-pins --quiet; then
+  echo "dev: ABORT — binary fingerprint drift in the sandbox (see above)." >&2
+  echo "  If you intentionally upgraded a tool, rebuild to re-pin: DEV_SANDBOX_REBUILD=1 $0" >&2
+  exit 1
+fi
+
+# --- 9) Resolve the in-container working dir from the host PWD ----------------
+CONTAINER_CWD="/workspaces/project"
+rel="${HOST_PWD#"$TARGET"}"
+[[ "$rel" != "$HOST_PWD" && -n "$rel" ]] && CONTAINER_CWD="/workspaces/project/${rel#/}"
+
+# --- 10) On-exit hooks: config-sync push (OPT-IN) + power-down -----------------
+# Config push is opt-in (DEV_SANDBOX_AUTOSYNC=1). Power-down: stop the VM when your
+# session ends so it stops pinning RAM — a container you start cleans up after
+# itself. Set DEV_SANDBOX_STOP_ON_EXIT=0 to keep it WARM for instant reuse.
+sandbox_install_autosync_trap "dev" "$CID" "${DEV_SANDBOX_AUTOSYNC:-0}" "${DEV_SANDBOX_STOP_ON_EXIT:-1}"
+
+# --- 11) Open an interactive session -----------------------------------------
+if [[ -n "${DEV_SANDBOX_SHELL:-}" ]]; then
+  set -- bash
+else
+  set -- claude "$@"
+fi
+# TTY only in a real terminal: interactive claude needs -i -t; piped/`-p` use gets
+# no flags so it doesn't wait on (absent) stdin.
+TTY_FLAGS=()
+[[ -t 0 && -t 1 ]] && TTY_FLAGS=(-i -t)
+set +e
+# F6: set the working dir with `container exec -w` (apple/container 1.0.0) instead
+# of a DEV_CWD env + `bash -c cd` wrapper. CONTAINER_CWD is always under the
+# /workspaces/project mount (derived from HOST_PWD under TARGET), so it exists.
+container exec --user dev -w "$CONTAINER_CWD" \
+  ${TTY_FLAGS[@]+"${TTY_FLAGS[@]}"} ${EXEC_ENV[@]+"${EXEC_ENV[@]}"} "$NAME" "$@"
+_rc=$?
+set -e
+exit "$_rc"

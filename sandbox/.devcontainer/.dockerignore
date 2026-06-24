@@ -1,0 +1,9 @@
+# Build context is .devcontainer/. COPY'd into the image: init-firewall.sh,
+# perms-fix.sh, entrypoint.sh, squid.conf, allowlist.txt, post-create.sh,
+# post-start.sh, bin/doctor, bin/verify-pins. Everything below runs on the host
+# or is bind-mounted at runtime — keep it out of the daemon build context.
+README.md
+bin/dev
+launcher-common.sh
+allowlist.extra.txt
+.dockerignore

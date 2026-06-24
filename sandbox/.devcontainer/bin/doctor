@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Generic sandbox readiness check. Baked as /usr/local/bin/dev-sandbox-doctor.
+# Run inside the container:  dev-sandbox-doctor
+#
+# Verifies the workspace is writable, the egress lock + proxy are up and
+# enforcing the allowlist, the launch-integrity pins match, and the LLM token is
+# present.
+
+set -uo pipefail
+WS=/workspaces/project
+pass=0; warn=0; fail=0
+ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; pass=$((pass+1)); }
+note() { printf '  \033[33m!\033[0m %s\n' "$*"; warn=$((warn+1)); }
+bad()  { printf '  \033[31m✗\033[0m %s\n' "$*"; fail=$((fail+1)); }
+
+echo "== Workspace =="
+if ( : > "$WS/.doctor.$$" ) 2>/dev/null; then rm -f "$WS/.doctor.$$"; ok "workspace is writable (full dev)"; else bad "workspace is NOT writable"; fi
+git -C "$WS" rev-parse --short HEAD >/dev/null 2>&1 && ok "git read ops work (HEAD: $(git -C "$WS" rev-parse --short HEAD 2>/dev/null))" || note "not a git repo (or no commits) — fine for non-git targets"
+
+echo "== Toolchain =="
+for b in node npm claude git python3; do
+  command -v "$b" >/dev/null 2>&1 && ok "$b present ($("$b" --version 2>/dev/null | head -1))" || bad "$b missing"
+done
+
+echo "== Launch integrity (pinned binaries) =="
+if command -v dev-sandbox-verify-pins >/dev/null 2>&1; then
+  pin_err="$(dev-sandbox-verify-pins --quiet 2>&1 >/dev/null)"
+  if [[ -z "$pin_err" ]]; then
+    ok "node/npm/claude/gh/git/python3 match build-time fingerprints"
+  else
+    while IFS= read -r line; do [[ -n "$line" ]] && bad "$line"; done <<<"$pin_err"
+  fi
+else
+  note "dev-sandbox-verify-pins not baked — rebuild the image to enable pin checks"
+fi
+
+echo "== Egress lock (allowlist-enforced) =="
+[[ -f /run/egress-firewall-ok ]] && ok "firewall sentinel present" || bad "firewall sentinel missing (/run/egress-firewall-ok)"
+pgrep -x squid >/dev/null 2>&1 && ok "squid running" || bad "squid not running"
+(exec 3<>/dev/tcp/127.0.0.1/3128) 2>/dev/null && ok "proxy listening on 127.0.0.1:3128" || bad "proxy not listening on :3128"
+curl -sS --max-time 12 -o /dev/null -w '%{http_code}' https://api.anthropic.com/ 2>/dev/null | grep -qE '^[0-9]' \
+  && ok "Anthropic API reachable via proxy" || note "could not reach api.anthropic.com"
+if curl -sS --max-time 8 -o /dev/null https://example.com/ 2>/dev/null; then
+  bad "DENIED host example.com was reachable — allowlist not enforced!"
+else ok "denied host blocked (example.com)"; fi
+echo "  (effective allowlist: $(grep -cvE '^\s*#|^\s*$' /etc/squid/allowlist.txt 2>/dev/null || echo '?') hosts)"
+
+echo "== LLM credentials =="
+[[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}${ANTHROPIC_API_KEY:-}${ANTHROPIC_AUTH_TOKEN:-}" ]] && ok "Claude token in env" || bad "no Claude token (set dev-sandbox-claude-code-token in Keychain)"
+
+echo "== Trust model =="
+note "Workspace is READ-WRITE and egress is allowlist-locked. No push token is"
+note "  forwarded here — commit & push via the 'git-agent' sandbox."
+
+echo
+echo "Summary: ${pass} ok, ${warn} warn, ${fail} fail"
+(( fail == 0 ))
