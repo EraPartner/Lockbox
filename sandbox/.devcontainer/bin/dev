@@ -117,6 +117,14 @@ NEW_INBOUND="$(cat "$INBOUND_OUT" 2>/dev/null || true)"
 source "$DC/launcher-common.sh"
 sandbox_stage_claude_config "$STAGE_NAME"
 
+# --- 3b) Lock host-executed git paths READ-ONLY (.git + relocated hooks) -------
+# Bind .git — and the effective core.hooksPath dir when it relocates hooks OUTSIDE
+# .git (e.g. .githooks) — :ro OVER the RW workspace so an in-container agent can
+# edit the working tree but CANNOT rewrite history or plant a hook the HOST git
+# would later execute OUTSIDE the sandbox (a VM→host escape on `git commit`). Local
+# commit/push is git-agent's job, not this box's. See sandbox_git_ro_mounts.
+sandbox_git_ro_mounts "$TARGET" /workspaces/project
+
 # --- 4) Build (skip when the image already exists, unless rebuild requested) --
 # F7: `container build` is cached but still spins up the builder VM on every launch
 # (startup latency). Skip it when the image already exists AND no rebuild was asked
@@ -173,6 +181,7 @@ else
     -e NO_PROXY=localhost,127.0.0.1,::1 \
     -e no_proxy=localhost,127.0.0.1,::1 \
     -v "$TARGET:/workspaces/project" \
+    ${GIT_RO_MOUNTS[@]+"${GIT_RO_MOUNTS[@]}"} \
     -v "dev-sandbox-claude-$HASH:/home/dev/.claude" \
     -v "dev-sandbox-config-$HASH:/home/dev/.config" \
     -v "dev-sandbox-local-$HASH:/home/dev/.local" \

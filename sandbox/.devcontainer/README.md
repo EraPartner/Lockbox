@@ -28,6 +28,7 @@ by a hash of its path), so projects never share Claude state.
 | Thing | Mode | Note |
 |---|---|---|
 | target dir → `/workspaces/project` | **RW** | full dev |
+| `.git` + `core.hooksPath` dir (e.g. `.githooks`) | RO | host-executed hooks — see Security model |
 | `~/.claude` (sanitized stage) | RO | seeded in; no host secrets |
 | PreToolUse guard + managed-settings | RO | un-disableable safety hook |
 | `~/.gitconfig` | RO | commit *identity* only |
@@ -62,6 +63,32 @@ api.openai.com
   trips this — rebuild to re-pin: `DEV_SANDBOX_REBUILD=1 dev-claude`.
 - Workspace is RW and **no push credential** is present, so a compromised agent
   can alter local files but cannot push or exfiltrate beyond the allowlist.
+- **Host-executed git paths are locked RO.** Git hooks run on your *Mac* (you
+  commit/push on the host — `.git` is RO in-container and no push token is
+  present). So `.git` **and** the effective `core.hooksPath` dir (Vision /
+  Watchman / Brain / this repo relocate hooks to `.githooks`, *outside* `.git`)
+  are bind-mounted `:ro` over the RW workspace by `sandbox_git_ro_mounts`
+  (`launcher-common.sh`). Without this an agent could overwrite
+  `.githooks/pre-commit`, and your next host `git commit` would run its code as
+  you, with Keychain + ssh-agent in reach — a VM→host escape that bypasses the
+  hypervisor. If `core.hooksPath` is set but the dir is absent, an empty RO dir
+  is overlaid so the agent can't *create* one either (verified live: the write
+  gets `EROFS`; the only cost is a spurious empty `<hooksPath>/` left in the
+  workspace — cosmetic, and only in that misconfigured edge case).
+- **Residual risk — other host-executed workspace files.** The RO lock covers the
+  git paths because they can't be hand-enumerated but *can* be derived. Two
+  classes are NOT locked, by design:
+  - **Build / release / install scripts** (`package.json` scripts, `install.sh`,
+    packaging post-install) run on the host at *release/build* time. They can't be
+    RO-mounted without breaking the dev loop (the agent legitimately edits them).
+    Mitigation is process: **review the diff before running any workspace build /
+    release script on the host** — treat them like any other untrusted workspace
+    content.
+  - **Project-level Claude config** (`.claude/settings.json`, `settings.local.json`)
+    defines hooks that execute if you run Claude Code *on the host* in this repo.
+    Left RW so an in-container agent can edit project config normally. The host-side
+    `managed-settings.json` + `claude-guard` (both mounted RO here) are expected to
+    neutralize project-level hooks; verify that on your host if you rely on it.
 
 ## Health
 
