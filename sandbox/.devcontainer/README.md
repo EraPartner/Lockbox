@@ -97,6 +97,6 @@ Inside the container: `dev-sandbox-doctor`.
 ## Canonical files
 
 `init-firewall.sh`, `squid.conf`, `allowlist.txt`, and `launcher-common.sh` are
-**generated/vendored** by `devcontainer-egress/sync.sh` — do not hand-edit them
-here. Edit the canonical copies in `devcontainer-egress/` (or this dir's
+**generated/vendored** by `LockBox/sync.sh` — do not hand-edit them
+here. Edit the canonical copies in `LockBox/` (or this dir's
 `allowlist.extra.txt`) and re-run `./sync.sh`.

@@ -1,5 +1,5 @@
 # Generic sandbox egress extras (merged onto base-allowlist.txt by
-# devcontainer-egress/sync.sh into the baked allowlist.txt).
+# LockBox/sync.sh into the baked allowlist.txt).
 #
 # This is the GENERAL DEV FLOOR for the universal sandbox: the package registries
 # a typical Node/Python project needs to install dependencies. It widens egress

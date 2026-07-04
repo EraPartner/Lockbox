@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tracked pre-commit gate for devcontainer-egress. Enabled with:
+# Tracked pre-commit gate for LockBox. Enabled with:
 #   git config core.hooksPath .githooks
 # (sync.sh sets this up is NOT automatic — run the line once per clone, or it is
 # already set in this repo's .git/config.)

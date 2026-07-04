@@ -23,6 +23,7 @@ BRAIN_DC="${BRAIN_DC:-/Users/computer/Library/Mobile Documents/iCloud~md~obsidia
 EGRESS_REPO="${EGRESS_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)}"
 
 # Every .devcontainer the canonical egress files are vendored into.
+# shellcheck disable=SC2034  # consumed by scripts that source this file (sync.sh/audit.sh)
 EGRESS_DEVCONTAINERS=(
   "$CODE_ROOT/Vision/.devcontainer"
   "$CODE_ROOT/Watchman/.devcontainer"
