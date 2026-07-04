@@ -209,7 +209,11 @@ EXEC_ENV=()
 sandbox_forward_llm_creds "dev-sandbox-claude-code-token"
 
 # --- 8) Launch-integrity gate (clean shell so safe-chain can't shadow paths) --
-if ! container exec --user dev -e BASH_ENV= "$NAME" dev-sandbox-verify-pins --quiet; then
+# Invoke the gate by ABSOLUTE path, never by bare name: the dev-writable npm
+# prefix on PATH could otherwise hold a `dev-sandbox-verify-pins` stub that
+# `exit 0`s, silently defeating the integrity check. The pinned copy lives at
+# /usr/local/bin (root-owned, not dev-writable).
+if ! container exec --user dev -e BASH_ENV= "$NAME" /usr/local/bin/dev-sandbox-verify-pins --quiet; then
   echo "dev: ABORT — binary fingerprint drift in the sandbox (see above)." >&2
   echo "  If you intentionally upgraded a tool, rebuild to re-pin: DEV_SANDBOX_REBUILD=1 $0" >&2
   exit 1

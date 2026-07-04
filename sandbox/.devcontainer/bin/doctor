@@ -23,8 +23,9 @@ for b in node npm claude git python3; do
 done
 
 echo "== Launch integrity (pinned binaries) =="
-if command -v dev-sandbox-verify-pins >/dev/null 2>&1; then
-  pin_err="$(dev-sandbox-verify-pins --quiet 2>&1 >/dev/null)"
+if [[ -x /usr/local/bin/dev-sandbox-verify-pins ]]; then
+  # Absolute path — a bare-name call could resolve to a dev-writable shadow.
+  pin_err="$(/usr/local/bin/dev-sandbox-verify-pins --quiet 2>&1 >/dev/null)"
   if [[ -z "$pin_err" ]]; then
     ok "node/npm/claude/gh/git/python3 match build-time fingerprints"
   else

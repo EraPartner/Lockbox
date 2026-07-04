@@ -87,12 +87,16 @@ ENV CC=gcc CXX=g++
 # claude install below) so the unprivileged dev user can't overwrite the pinned
 # claude/npm binaries post-launch (the verify-pins gate fingerprints these paths).
 # Runtime `npm i -g` (safe-chain) uses a SEPARATE dev-owned prefix,
-# /home/dev/.npm-global, set after the install. Root prefix is FIRST on PATH so
-# claude resolves to the pinned copy.
+# /home/dev/.npm-global. That prefix is dev-WRITABLE and persists in the writable
+# layer, so it goes LAST on PATH — after the system dirs too. A compromised agent
+# must not be able to shadow a pinned or system tool (claude/npm/node/git/gh/
+# python3, or the sha256sum/awk that verify-pins itself relies on) by dropping a
+# same-named binary there. The pinned tool dirs stay first so claude resolves to
+# the pinned copy; dev's own global installs still resolve, just at lowest priority.
 ENV NPM_CONFIG_PREFIX=/usr/local/share/npm-global
-ENV PATH=/usr/local/share/npm-global/bin:/home/dev/.npm-global/bin:/opt/python/bin:/usr/local/bin:$PATH
+ENV PATH=/usr/local/share/npm-global/bin:/opt/python/bin:/usr/local/bin:$PATH:/home/dev/.npm-global/bin
 # Login shells reset PATH via /etc/profile; re-add the tool dirs for them too.
-RUN printf 'export PATH="/usr/local/share/npm-global/bin:/home/dev/.npm-global/bin:/opt/python/bin:/usr/local/bin:$PATH"\n' \
+RUN printf 'export PATH="/usr/local/share/npm-global/bin:/opt/python/bin:/usr/local/bin:$PATH:/home/dev/.npm-global/bin"\n' \
       > /etc/profile.d/00-sandbox-path.sh
 
 # --- Claude Code CLI ----------------------------------------------------------
