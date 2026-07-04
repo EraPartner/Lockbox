@@ -1,0 +1,15 @@
+# CodeQL configuration for LockBox.
+#
+# Only the `actions` language is analyzed (see the workflow matrix): this repo
+# is shell + a Dockerfile, neither of which CodeQL can analyze, so the CI
+# workflows under .github/workflows are the entire analyzable surface.
+
+name: "LockBox CodeQL"
+
+# security-extended: broader security coverage than the default suite.
+queries:
+  - uses: security-extended
+
+# No paths-ignore: every workflow is in scope, and the workflows ARE the target.
+# Kept as a config file for parity with the rest of the fleet and as the place
+# for future path/query tuning.

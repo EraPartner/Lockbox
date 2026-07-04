@@ -1,0 +1,51 @@
+name: CodeQL
+
+# Shell and Dockerfiles have no CodeQL analyzer, so the analyzable surface in
+# this repo is the GitHub Actions workflows themselves — CodeQL's `actions`
+# support (GA since 2025-04) flags script injection, missing/over-broad
+# permissions, unpinned actions and untrusted-input sinks in the workflows.
+# Advanced setup: GitHub's "default" code-scanning setup must be OFF in repo
+# settings (Settings → Code security → Code scanning → Advanced) or Analyze errors.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
+  schedule:
+    - cron: "0 3 * * 1" # weekly, Monday 03:00 UTC — full scan even without code changes
+
+# Deny all permissions by default; each job opts in to only what it needs.
+permissions: {}
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [actions]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4
+        with:
+          languages: ${{ matrix.language }}
+          # Actions workflows are declarative YAML — nothing to build.
+          build-mode: none
+          config-file: ./.github/codeql/codeql-config.yml
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4

@@ -5,9 +5,11 @@ name: CI
 # which aren't checked out here — so `sync.sh --check` (which needs all six
 # targets) is intentionally NOT run in CI; the local .githooks/pre-commit covers
 # fleet drift on the machine that owns the fleet. CI covers what one checkout can
-# prove: scripts parse + lint clean, no secrets are baked in, the in-repo
-# vendored copies match their canonical sources, and no known-vulnerable deps or
-# Dockerfile misconfigs slip in (Trivy).
+# prove: scripts parse + lint clean, no secrets are baked in (audit.sh regex
+# scan + a gitleaks backstop), the in-repo vendored copies match their canonical
+# sources, and no Dockerfile misconfigs slip in (Trivy). Workflow security
+# (script injection, unpinned actions) is covered by CodeQL in codeql.yml —
+# the only CodeQL-analyzable surface here, since shell has no analyzer.
 #
 # Hardening posture mirrors the fleet CI standard: deny-all default permissions
 # with per-job least privilege, pinned action SHAs, pinned runner image, per-job
@@ -71,6 +73,24 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
       - name: audit.sh
         run: ./audit.sh
+
+  # gitleaks backstop — a second, broader secrets scan over the push/PR diff
+  # range, independent of audit.sh's repo-specific regexes. Mirrors the fleet
+  # (Vision/Watchman/VaultLens all run gitleaks in CI); audit.sh stays as the
+  # canonical, hook-enforced scan.
+  secrets-scan:
+    name: leak audit (gitleaks backstop)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   vendored:
     name: in-repo vendored copies match canonical
@@ -171,6 +191,7 @@ jobs:
     needs:
       - shell
       - secrets
+      - secrets-scan
       - vendored
       - dockerfile
       - trivy-scan
