@@ -1,0 +1,12 @@
+# Trivy misconfiguration suppressions for the CI `trivy-scan` job.
+# Each entry must state WHY the finding is intentional — bare IDs rot.
+
+# AVD-DS-0002 — "Specify at least 1 USER command with a non-root user".
+# Intentional and load-bearing here: the devcontainer's ENTRYPOINT MUST run as
+# root to configure the egress firewall (iptables) and the Squid TLS-bump proxy
+# before any dev session exists. Privileges are not held for dev work — the
+# container image ships a non-root `dev` user (UID 1000, sudo intentionally
+# absent) and all dev sessions enter via `container exec` as that user (see
+# sandbox/.devcontainer/entrypoint.sh header). A `USER dev` line would break the
+# privileged setup that is this repo's entire purpose.
+AVD-DS-0002

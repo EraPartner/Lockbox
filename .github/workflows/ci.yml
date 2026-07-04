@@ -1,25 +1,46 @@
-name: ci
+name: CI
 
 # Guards the security-critical shell + container definitions. These checks are
 # SELF-CONTAINED: they never touch the sibling fleet repos (Vision/Watchman/…),
 # which aren't checked out here — so `sync.sh --check` (which needs all six
 # targets) is intentionally NOT run in CI; the local .githooks/pre-commit covers
 # fleet drift on the machine that owns the fleet. CI covers what one checkout can
-# prove: scripts parse + lint clean, no secrets are baked in, and the in-repo
-# vendored copies match their canonical sources.
+# prove: scripts parse + lint clean, no secrets are baked in, the in-repo
+# vendored copies match their canonical sources, and no known-vulnerable deps or
+# Dockerfile misconfigs slip in (Trivy).
+#
+# Hardening posture mirrors the fleet CI standard: deny-all default permissions
+# with per-job least privilege, pinned action SHAs, pinned runner image, per-job
+# timeouts, and a single aggregated "CI Complete" required status check.
 
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
   pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "*.md"
   workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Deny all permissions by default; each job opts in to only what it needs.
+permissions: {}
 
 jobs:
   shell:
     name: shell scripts (syntax + shellcheck)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
       - name: bash -n (parse check)
         run: |
           set -euo pipefail
@@ -32,7 +53,7 @@ jobs:
           for f in "${files[@]}"; do bash -n "$f" || rc=1; done
           exit "$rc"
       - name: shellcheck
-        uses: ludeeus/action-shellcheck@master
+        uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # 2.0.0
         env:
           SHELLCHECK_OPTS: -s bash -e SC1090,SC1091
         with:
@@ -42,17 +63,23 @@ jobs:
 
   secrets:
     name: leak audit (no baked secrets)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
       - name: audit.sh
         run: ./audit.sh
 
   vendored:
     name: in-repo vendored copies match canonical
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
       - name: cmp canonical vs sandbox/.devcontainer
         run: |
           set -euo pipefail
@@ -70,14 +97,110 @@ jobs:
 
   dockerfile:
     name: dockerfile lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
       - name: hadolint
-        uses: hadolint/hadolint-action@v3.1.0
+        uses: hadolint/hadolint-action@54c9adbab1582c2ef04b2016b760714a4bfde3cf # v3.1.0
         with:
           dockerfile: sandbox/.devcontainer/Dockerfile
           # DL3008 (pin apt versions) is a deliberate tradeoff here — the image
           # is rebuilt+re-pinned via binary-pins.txt, not apt version pins.
           ignore: DL3008
           failure-threshold: error
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Trivy — Dockerfile / IaC misconfiguration scan (HIGH/CRITICAL). The `misconfig`
+  # scanner is the whole point here: the canonical devcontainer Dockerfile IS this
+  # repo's product, and hadolint only covers a subset of what Trivy's policy set
+  # flags. The `vuln` scanner is deliberately OFF — no lockfile or dependency
+  # manifest ships in this repo, so it would scan nothing (enabling it "for later"
+  # is exactly the inert default we don't want). SARIF is uploaded to the Security
+  # tab so findings are tracked even when the gating (table) step is green.
+  # ─────────────────────────────────────────────────────────────────────────────
+  trivy-scan:
+    name: Trivy Scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write # required to upload SARIF to GitHub Security
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+
+      - name: Run Trivy scan (table — fail on HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: misconfig
+          format: table
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+
+      - name: Run Trivy scan (SARIF — upload to GitHub Security)
+        if: always()
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: misconfig
+          format: sarif
+          output: trivy-results.sarif
+          severity: HIGH,CRITICAL
+          exit-code: "0"
+
+      - name: Upload Trivy SARIF to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Quality Gate — every check above must pass. Aggregates results so a failure
+  # in any job surfaces as one status.
+  # ─────────────────────────────────────────────────────────────────────────────
+  quality-gate:
+    name: Quality Gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    needs:
+      - shell
+      - secrets
+      - vendored
+      - dockerfile
+      - trivy-scan
+    if: always()
+    steps:
+      - name: Check all gates passed
+        run: |
+          results='${{ toJson(needs.*.result) }}'
+          if echo "$results" | grep -qE '"(failure|cancelled)"'; then
+            echo "Quality gate failed. Job results: $results"
+            exit 1
+          fi
+          echo "All quality gates passed."
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # CI Complete — single required status check covering the whole pipeline.
+  # Set "CI Complete" as the required check in branch protection settings.
+  # ─────────────────────────────────────────────────────────────────────────────
+  ci-complete:
+    name: CI Complete
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    needs: [quality-gate]
+    if: always()
+    steps:
+      - name: Check pipeline passed
+        run: |
+          results='${{ toJson(needs.*.result) }}'
+          if echo "$results" | grep -qE '"(failure|cancelled)"'; then
+            echo "CI pipeline failed. Job results: $results"
+            exit 1
+          fi
+          echo "All CI stages complete."

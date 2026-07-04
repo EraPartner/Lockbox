@@ -1,0 +1,22 @@
+# Dependabot version updates. LockBox has no application dependency manifests
+# (no bun/npm/pip lockfiles) — only pinned GitHub Actions and the devcontainer
+# Docker base image — so only those two ecosystems are tracked here.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  # The devcontainer Dockerfile lives under sandbox/.devcontainer, so point the
+  # docker ecosystem at that directory rather than the repo root.
+  - package-ecosystem: "docker"
+    directory: "/sandbox/.devcontainer"
+    schedule:
+      interval: "weekly"
+    groups:
+      docker:
+        patterns: ["*"]
