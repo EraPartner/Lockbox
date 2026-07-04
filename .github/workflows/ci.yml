@@ -1,0 +1,83 @@
+name: ci
+
+# Guards the security-critical shell + container definitions. These checks are
+# SELF-CONTAINED: they never touch the sibling fleet repos (Vision/Watchman/…),
+# which aren't checked out here — so `sync.sh --check` (which needs all six
+# targets) is intentionally NOT run in CI; the local .githooks/pre-commit covers
+# fleet drift on the machine that owns the fleet. CI covers what one checkout can
+# prove: scripts parse + lint clean, no secrets are baked in, and the in-repo
+# vendored copies match their canonical sources.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  shell:
+    name: shell scripts (syntax + shellcheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: bash -n (parse check)
+        run: |
+          set -euo pipefail
+          # Every tracked file with a bash/sh shebang.
+          mapfile -t files < <(git ls-files | while read -r f; do
+            [[ -f "$f" ]] && head -1 "$f" | grep -qE '^#!.*\b(bash|sh)\b' && echo "$f"
+          done)
+          printf 'checking: %s\n' "${files[@]}"
+          rc=0
+          for f in "${files[@]}"; do bash -n "$f" || rc=1; done
+          exit "$rc"
+      - name: shellcheck
+        uses: ludeeus/action-shellcheck@master
+        env:
+          SHELLCHECK_OPTS: -s bash -e SC1090,SC1091
+        with:
+          # Follow-source is off (SC1090/91 disabled) because launcher-common.sh
+          # is sourced by path at runtime, not resolvable at lint time.
+          severity: warning
+
+  secrets:
+    name: leak audit (no baked secrets)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: audit.sh
+        run: ./audit.sh
+
+  vendored:
+    name: in-repo vendored copies match canonical
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: cmp canonical vs sandbox/.devcontainer
+        run: |
+          set -euo pipefail
+          dst=sandbox/.devcontainer
+          rc=0
+          for f in init-firewall.sh squid.conf launcher-common.sh; do
+            if cmp -s "$f" "$dst/$f"; then
+              echo "ok    $dst/$f matches canonical $f"
+            else
+              echo "DRIFT $dst/$f differs from canonical $f — run ./sync.sh" >&2
+              rc=1
+            fi
+          done
+          exit "$rc"
+
+  dockerfile:
+    name: dockerfile lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: sandbox/.devcontainer/Dockerfile
+          # DL3008 (pin apt versions) is a deliberate tradeoff here — the image
+          # is rebuilt+re-pinned via binary-pins.txt, not apt version pins.
+          ignore: DL3008
+          failure-threshold: error

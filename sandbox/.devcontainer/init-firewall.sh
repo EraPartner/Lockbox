@@ -89,11 +89,15 @@ iptables -A EGRESS_DENY -j DROP
 iptables -A OUTPUT -j EGRESS_DENY
 
 # --- Verify the lock took, then drop the sentinel ---
-# Three independent invariants must ALL hold (script runs without `set -e`, so a
-# mid-script `iptables -A` failure can't be assumed to have aborted): default
-# policy is DROP, the proxy-UID ACCEPT exists, and the catch-all EGRESS_DENY jump
-# is present (so a ruleset that silently lost the deny/audit rule fails closed).
-if iptables -S OUTPUT 2>/dev/null | grep -q '^-P OUTPUT DROP' \
+# Four independent invariants must ALL hold (script runs without `set -e`, so a
+# mid-script `iptables -A` failure can't be assumed to have aborted): the IPv4
+# AND IPv6 OUTPUT policies are DROP, the proxy-UID ACCEPT exists, and the
+# catch-all EGRESS_DENY jump is present (so a ruleset that silently lost the
+# deny/audit rule fails closed). The IPv6 check matters because the design leans
+# on `ip6tables -P OUTPUT DROP` as the IPv6 backstop (see squid.conf): if that
+# policy-set silently failed above, the sentinel must NOT claim "verified".
+if iptables  -S OUTPUT 2>/dev/null | grep -q '^-P OUTPUT DROP' \
+   && ip6tables -S OUTPUT 2>/dev/null | grep -q '^-P OUTPUT DROP' \
    && iptables -C OUTPUT -m owner --uid-owner "$PROXY_USER" -j ACCEPT 2>/dev/null \
    && iptables -C OUTPUT -j EGRESS_DENY 2>/dev/null; then
   : > "$SENTINEL" 2>/dev/null || true

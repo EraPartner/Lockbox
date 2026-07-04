@@ -21,12 +21,14 @@ log() { echo "[entrypoint] $*"; }
 # 1) Repair ownership of named-volume mountpoints.
 /usr/local/sbin/dev-sandbox-perms-fix || log "WARN: perms-fix returned non-zero."
 
-# Network pre-flight: if the container lost its external interface (host
+# Network pre-flight: if the container lost external connectivity (host
 # sleep/resume, DD update/reaper), warn with the fix but still lock + keep alive.
-has_iface=0
-for iface in /sys/class/net/eth*; do [[ -e "$iface" ]] && has_iface=1; done
+# The default route in /proc/net/route is the authoritative signal — if one
+# exists the box has a usable upstream regardless of the interface's NAME (don't
+# assume `eth*`; apple/container may name it otherwise), and if it's gone the
+# proxy can't resolve upstreams no matter what interfaces are present.
 default_route=$(awk 'NR>1 && $2=="00000000" {print $1; exit}' /proc/net/route 2>/dev/null)
-if (( ! has_iface )) || [[ -z "$default_route" ]]; then
+if [[ -z "$default_route" ]]; then
   cat >&2 <<EOF
 [entrypoint] ⚠  No external network interface / default route.
 [entrypoint]    The proxy won't resolve upstreams until this is fixed.
