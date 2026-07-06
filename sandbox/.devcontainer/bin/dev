@@ -160,6 +160,26 @@ elif container ls -aq 2>/dev/null | grep -qx "$NAME"; then
   container start "$NAME" >/dev/null
   [[ "$OLD_INBOUND" != "$NEW_INBOUND" ]] && echo "$PORTS_CHANGED_MSG" >&2
 else
+  # Pre-flight the required RO bind-mount SOURCES. Unlike the per-target overlay
+  # paths (guarded above), these three are spliced UNCONDITIONALLY into the
+  # `container run` below, so a missing one aborts create with an opaque runtime
+  # error. The first two carry the PreToolUse guard + un-disableable managed
+  # settings (a SECURITY control), so fail closed with a clear message. (F: bin/dev
+  # missing-mount pre-flight)
+  missing_mounts=()
+  for _src in \
+    "$HOME/.claude/hooks/guard.mjs" \
+    "$HOME/.claude/hooks/managed-settings.json" \
+    "$HOME/.gitconfig"; do
+    [[ -e "$_src" ]] || missing_mounts+=("$_src")
+  done
+  if (( ${#missing_mounts[@]} > 0 )); then
+    echo "dev: missing required host file(s) for the read-only bind mounts:" >&2
+    for _m in "${missing_mounts[@]}"; do echo "       - $_m" >&2; done
+    echo "     The PreToolUse guard + managed settings + git identity are mounted from" >&2
+    echo "     these paths; create them on the host, then re-run." >&2
+    exit 1
+  fi
   container run -d --name "$NAME" \
     --init \
     --cap-drop ALL \
@@ -167,7 +187,7 @@ else
     --cap-add FOWNER --cap-add SETUID --cap-add SETGID \
     -m 6g -c 4 \
     --tmpfs /tmp --tmpfs /var/tmp \
-    "${PORT_FLAGS[@]}" \
+    ${PORT_FLAGS[@]+"${PORT_FLAGS[@]}"} \
     -e DEVCONTAINER=true \
     -e DEV_SANDBOX=true \
     -e DISABLE_TELEMETRY=1 \
@@ -194,6 +214,16 @@ else
     "$IMAGE" >/dev/null
 fi
 CID="$NAME"
+
+# --- On-exit hooks: config-sync push (OPT-IN) + power-down --------------------
+# Installed HERE — immediately after the container is created/started, and BEFORE
+# the proxy-wait, lifecycle replay, and pin gate below — so that ANY hard abort in
+# that window (a post-start `exit 1` on a missing firewall sentinel, a verify-pins
+# drift abort, etc.) still runs cleanup and does NOT orphan the ~6 GB VM running,
+# pinning RAM. Config push is opt-in (DEV_SANDBOX_AUTOSYNC=1). Power-down defaults
+# ON so a container you start cleans up after itself; DEV_SANDBOX_STOP_ON_EXIT=0
+# keeps it WARM for instant reuse. (F: orphaned-container on early abort)
+sandbox_install_autosync_trap "dev" "$CID" "${DEV_SANDBOX_AUTOSYNC:-0}" "${DEV_SANDBOX_STOP_ON_EXIT:-1}"
 
 # Wait for the egress proxy (entrypoint applies firewall → squid).
 container exec "$NAME" bash -lc 'for i in $(seq 1 30); do (exec 3<>/dev/tcp/127.0.0.1/3128) 2>/dev/null && break; sleep 1; done' || true
@@ -224,13 +254,9 @@ CONTAINER_CWD="/workspaces/project"
 rel="${HOST_PWD#"$TARGET"}"
 [[ "$rel" != "$HOST_PWD" && -n "$rel" ]] && CONTAINER_CWD="/workspaces/project/${rel#/}"
 
-# --- 10) On-exit hooks: config-sync push (OPT-IN) + power-down -----------------
-# Config push is opt-in (DEV_SANDBOX_AUTOSYNC=1). Power-down: stop the VM when your
-# session ends so it stops pinning RAM — a container you start cleans up after
-# itself. Set DEV_SANDBOX_STOP_ON_EXIT=0 to keep it WARM for instant reuse.
-sandbox_install_autosync_trap "dev" "$CID" "${DEV_SANDBOX_AUTOSYNC:-0}" "${DEV_SANDBOX_STOP_ON_EXIT:-1}"
-
-# --- 11) Open an interactive session -----------------------------------------
+# --- 10) Open an interactive session -----------------------------------------
+# (The on-exit config-sync/power-down trap was installed at step 5, right after the
+# container came up, so an early abort can't orphan the VM.)
 if [[ -n "${DEV_SANDBOX_SHELL:-}" ]]; then
   set -- bash
 else
