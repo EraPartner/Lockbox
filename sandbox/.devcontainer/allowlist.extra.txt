@@ -25,5 +25,12 @@ files.pythonhosted.org
 ghcr.io
 pkg-containers.githubusercontent.com
 
+# GitHub raw files + release assets — ad-hoc `curl`, `gh release download`.
+# DEMOTED here from the shared base-allowlist.txt: these are multi-tenant hosts
+# (any public repo / release asset), so they stay OFF the tight per-project
+# baselines and live only in this generic dev floor, where ad-hoc curls happen.
+raw.githubusercontent.com
+objects.githubusercontent.com
+
 # Plugins: context7 MCP (npx @upstash/context7-mcp → context7 docs API)
 context7.com
