@@ -19,7 +19,6 @@ BRAIN_DC="${BRAIN_DC:-/Users/computer/Library/Mobile Documents/iCloud~md~obsidia
 # the .githooks gate). It now lives at <repo>/sandbox/.devcontainer and is a sync
 # target like any other. Resolve the repo root from THIS file's own location so
 # the path stays correct regardless of where the repo is checked out.
-# (~/Code/sandbox remains as a compat symlink → <repo>/sandbox for muscle memory.)
 EGRESS_REPO="${EGRESS_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)}"
 
 # Every .devcontainer the canonical egress files are vendored into.
@@ -32,3 +31,13 @@ EGRESS_DEVCONTAINERS=(
   "$EGRESS_REPO/sandbox/.devcontainer"
   "$BRAIN_DC"
 )
+
+# CI / self-check: with EGRESS_SELF_ONLY=1, restrict the target list to the in-repo
+# sandbox devcontainer only. The sibling fleet repos aren't checked out in CI, so
+# `EGRESS_SELF_ONLY=1 ./sync.sh --check` lets CI verify THIS repo's own vendored
+# copies AND its regenerated allowlist (via the same gen_allowlist, no divergence)
+# without needing the whole fleet side-by-side.
+if [[ "${EGRESS_SELF_ONLY:-0}" == 1 ]]; then
+  # shellcheck disable=SC2034  # consumed by scripts that source this file
+  EGRESS_DEVCONTAINERS=("$EGRESS_REPO/sandbox/.devcontainer")
+fi
