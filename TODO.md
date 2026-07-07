@@ -5,11 +5,10 @@ incrementally by research agents so progress survives interruptions.
 
 ## Implementation status — 2026-07-07
 
-**53 of 57 findings implemented and committed; 4 deliberately deferred.** All
-checked items below (`[x]`) landed in the commits mapped here; canonical changes
-were propagated to the six devcontainers via `./sync.sh` (the five sibling repos —
-Vision, Watchman, Napoleon-relay, git-agent, Brain — were committed separately in
-their own repos).
+**56 of 57 findings implemented and committed; 1 deferred.** All checked items below
+(`[x]`) landed in the commits mapped here; canonical changes were propagated to the
+six devcontainers via `./sync.sh` (the five sibling repos — Vision, Watchman,
+Napoleon-relay, git-agent, Brain — were committed separately in their own repos).
 
 | Commit | Area |
 |---|---|
@@ -21,30 +20,34 @@ their own repos).
 | `a5d44da` | `sync.sh`/`paths.sh`: atomic+fail-closed allowlist gen, dedup, self-check mode |
 | `91538a8` | allowlist: demote `raw`/`objects.githubusercontent.com` off the shared floor |
 | `78b1c7f` | sandbox: doctor checks, Dockerfile layer order, perms-fix/README/post-start docs |
-| `d9ed6bb` | CI: allowlist-regen check, `docker build` + `squid -k parse` jobs, gate hardening, hook bootstrap |
+| `d9ed6bb` | CI: allowlist-regen check, gate hardening, hook bootstrap |
 | `67a7a51` | top-level README: Setup/first-run section, corrected `audit.sh` description |
+| `2f0476e` | `VERSION` (0.1.0) + `CHANGELOG` |
+| `133082a` | vendored **provenance stamps** (version + canonical SHA-256); invariant → regenerate-and-compare |
+| `a21a84f` | **functional egress test** (`test/egress-smoke.sh`, `make test`) + CI `egress-test` boot job |
 
-**Deferred (the 4 `[ ]` items below), with rationale:**
+**Provenance stamp / functional test / versioning** (originally deferred) were done
+in the follow-up: the stamp is a *content* SHA-256 + version (a git-commit SHA can't
+be self-referential and isn't reproducible for `--check`), so the invariant became
+"regenerate canonical+stamp and compare" — verifiable, self-certifying, and churns
+only on real change. The egress test's gating assertions are internet-independent, so
+it runs as a CI gate.
+
+**Runtime-validated by booting the image under Apple `container`** (not just linted):
+the `init-firewall.sh` `iptables -C` conjunction + new v4/v6 DNS + metadata DROP rules
+(sentinel written), and the `squid.conf` CONNECT-only change (off-allowlist blocked,
+non-CONNECT cleartext → HTTP 403) — `test/egress-smoke.sh` passed 5/5, including
+against the stamped image. The CI `egress-test`/`squid -k parse` jobs run this in
+Actions on the next push.
+
+**Deferred (the 1 remaining `[ ]` item), with rationale:**
 
 - **Fleet drift CI in sibling repos** (`ci.yml:95-116`) — requires authoring +
-  testing new CI workflows across five heterogeneous repos (Napoleon-relay and
-  git-agent have zero workflows). The `sync.sh` propagation keeps them in sync now;
-  LockBox's own CI verifies its in-repo copy via `EGRESS_SELF_ONLY=1 sync.sh --check`.
+  testing new CI workflows across five heterogeneous repos (Napoleon-relay is not
+  even a git repo; git-agent has zero workflows). The `sync.sh` propagation keeps
+  them in sync now, and each vendored copy now carries a version/SHA stamp; LockBox's
+  own CI verifies its in-repo copy via `EGRESS_SELF_ONLY=1 sync.sh --check`.
   Recommended as a follow-up fleet task.
-- **Vendored-copy version/SHA stamp** — a per-file stamp would break the
-  byte-identical vendoring invariant that CI (`cmp`) and `sync.sh --check` rely on,
-  and would churn all six copies on every commit. Git history + `vendored-files.txt`
-  already provide provenance. Revisit only as a non-`cmp`'d sidecar if needed.
-- **Functional egress test** and **versioning (tags/CHANGELOG)** — chosen to skip
-  this pass. The egress test needs a privileged container runtime and can't run in
-  this repo's self-contained CI; `bin/doctor` already asserts an off-allowlist host
-  is blocked and Anthropic is reachable inside a live container.
-
-**Not machine-verifiable on macOS (flagged for a container smoke-test):** the
-`init-firewall.sh` `iptables -C` verification additions + new DROP rules, and the
-`squid.conf` CONNECT-only change. Both fail CLOSED (a subtle error blocks container
-start rather than leaking). The new CI `squid -k parse` and `docker build` jobs
-exercise the config/image but haven't run yet in Actions.
 
 Note: **[P3] `base-allowlist.txt:24` `api.github.com`** is checked off as ACCEPTED —
 it is inherent to `gh`/git in every container, and moving it to per-`gh` extras would
@@ -226,7 +229,7 @@ architecture findings are latent fragility, not live breakage.
 #### Architecture
 
 - [ ] **[P2 · DEFERRED]** `.github/workflows/ci.yml:95-116` / `paths.sh:27-34` — The only drift gate for the 5 *external* sibling repos is running `./sync.sh --check` on this one Mac (requires all targets checked out side-by-side); the receiving repos have no equivalent check (Napoleon-relay and git-agent have zero workflows; Vision/Watchman CI never references the canonical files). *Failure:* someone hand-edits `Vision/.devcontainer/squid.conf`; no automation anywhere catches it and the "single source of truth" silently forks — exactly the pre-repo "3 of 4 stale" bug the header warns about. *Fix:* add a drift check to each receiving repo's CI that fetches LockBox's canonical files and `cmp`s them, or generate vendored copies at container-build time instead of committing them.
-- [ ] **[P3 · DEFERRED]** `init-firewall.sh` / `squid.conf` / `launcher-common.sh` (vendored copies) — No version/hash/sync-timestamp stamp, so a baked image has no provenance tying it to a canonical revision. *Failure:* debugging a stale container, you cannot tell which generation of the egress lock it baked without manual `cmp`. *Fix:* have `sync.sh` prepend `# synced from LockBox @ <git-sha>` (like `gen_allowlist` already does for allowlist.txt).
+- [x] **[P3]** `init-firewall.sh` / `squid.conf` / `launcher-common.sh` (vendored copies) — No version/hash/sync-timestamp stamp, so a baked image has no provenance tying it to a canonical revision. *Failure:* debugging a stale container, you cannot tell which generation of the egress lock it baked without manual `cmp`. *Fix:* have `sync.sh` prepend `# synced from LockBox @ <git-sha>` (like `gen_allowlist` already does for allowlist.txt).
 - [x] **[P3]** `paths.sh:14-15` — `CODE_ROOT`/`BRAIN_DC` default to this user's exact machine layout; env overrides exist but are documented nowhere. *Failure:* a second contributor cannot run `sync.sh` without reverse-engineering paths.sh. *Fix:* document the overrides in a README setup section, or auto-discover siblings relative to `EGRESS_REPO`.
 
 #### Allowlist
@@ -243,8 +246,8 @@ architecture findings are latent fragility, not live breakage.
 
 #### Functionality
 
-- [ ] **[P2 · DEFERRED]** repo root — No test harness of any kind (no test files, no Makefile, no test job); a security-critical egress firewall + SNI proxy ships with zero automated proof that blocking works. *Failure:* a logic regression in `init-firewall.sh`/`squid.conf` that still lints/parses (e.g. mis-ordered `http_access`) reaches production containers un-caught. *Fix:* add one functional test that boots the image and asserts an off-allowlist host is refused while an on-allowlist host connects (needs privileged execution; complements the pass-3 `squid -k parse` item).
-- [ ] **[P3 · DEFERRED]** repo root — No versioning: no git tags, no CHANGELOG. *Failure:* combined with unstamped vendored copies, no way to reference or roll back "the egress lock as of version X" across the fleet. *Fix:* lightweight tags + CHANGELOG, or at minimum the sync-SHA stamp above.
+- [x] **[P2]** repo root — No test harness of any kind (no test files, no Makefile, no test job); a security-critical egress firewall + SNI proxy ships with zero automated proof that blocking works. *Failure:* a logic regression in `init-firewall.sh`/`squid.conf` that still lints/parses (e.g. mis-ordered `http_access`) reaches production containers un-caught. *Fix:* add one functional test that boots the image and asserts an off-allowlist host is refused while an on-allowlist host connects (needs privileged execution; complements the pass-3 `squid -k parse` item).
+- [x] **[P3]** repo root — No versioning: no git tags, no CHANGELOG. *Failure:* combined with unstamped vendored copies, no way to reference or roll back "the egress lock as of version X" across the fleet. *Fix:* lightweight tags + CHANGELOG, or at minimum the sync-SHA stamp above.
 - `.DS_Store` — checked and clean: present in the working tree but gitignored and untracked. No action.
 
 ### Pass 7 — Tooling & repo-hygiene deep dive (sync.sh, audit.sh, paths.sh, allowlists, pre-commit, CI)
