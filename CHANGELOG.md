@@ -35,8 +35,10 @@ findings tracked in `TODO.md`) plus provenance + test tooling.
 - **Functional egress smoke test** — `test/egress-smoke.sh` boots the image and asserts
   the firewall sentinel, an off-allowlist host is blocked, an on-allowlist host is
   reachable, and non-CONNECT cleartext is refused. `make test`; CI `egress-test` job.
-- **CI** — `docker build` and `squid -k parse` jobs; `EGRESS_SELF_ONLY` self-check that
-  also regenerates + compares the sandbox allowlist; weekly cron; CodeQL concurrency.
+- **CI** — a `squid -k parse` job and an `egress-test` job that *builds and boots* the
+  image (catching build breaks and asserting the lock enforces); `EGRESS_SELF_ONLY`
+  self-check that also regenerates + compares the sandbox allowlist; weekly cron;
+  CodeQL concurrency.
 - **Bootstrap** — `Makefile` (`make setup` enables the pre-commit hook) + README
   "Setup / first run" documenting the `CODE_ROOT`/`BRAIN_DC`/`EGRESS_*` overrides.
 - Shared `vendored-files.txt` manifest (single source for sync.sh + CI).
