@@ -1,6 +1,6 @@
 # LockBox convenience targets. Run `make setup` ONCE per fresh clone to enable the
 # tracked pre-commit gate (git does not carry core.hooksPath across a clone).
-.PHONY: setup sync check audit help
+.PHONY: setup sync check audit test help
 
 help: ## Show this help
 	@grep -E '^[a-z][a-zA-Z0-9_-]*:.*## ' $(MAKEFILE_LIST) \
@@ -18,3 +18,6 @@ check: ## Verify vendored copies + generated allowlists are in sync (no writes)
 
 audit: ## Scan the git index for hardcoded secrets / private keys
 	./audit.sh
+
+test: ## Boot the sandbox image and assert the egress lock enforces (needs a container runtime)
+	./test/egress-smoke.sh

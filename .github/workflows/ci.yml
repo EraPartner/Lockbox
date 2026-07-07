@@ -7,7 +7,9 @@ name: CI
 # fleet drift on the machine that owns the fleet. CI covers what one checkout can
 # prove: scripts parse + lint clean, no secrets are baked in (audit.sh regex
 # scan + a gitleaks backstop), the in-repo vendored copies match their canonical
-# sources, and no Dockerfile misconfigs slip in (Trivy). Workflow security
+# sources, no Dockerfile misconfigs slip in (Trivy), squid.conf parses, and — by
+# booting the image under a privileged runner — the egress lock actually enforces
+# (off-allowlist blocked, non-CONNECT cleartext refused). Workflow security
 # (script injection, unpinned actions) is covered by CodeQL in codeql.yml —
 # the only CodeQL-analyzable surface here, since shell has no analyzer.
 #
@@ -160,20 +162,24 @@ jobs:
           sudo chown -R proxy:proxy /etc/squid/certs /var/lib/squid /var/log/squid /var/spool/squid
           sudo squid -k parse
 
-  docker-build:
-    name: devcontainer image builds
+  egress-test:
+    name: devcontainer builds + egress lock enforces
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
-      - name: docker build (no push)
-        # hadolint + Trivy lint/scan the Dockerfile but never BUILD it; a Dockerfile
-        # that lints clean but fails `docker build` (bad apt package, broken pin,
-        # unreachable base/release URL) would otherwise merge and only break on the
-        # next developer rebuild. Build the image (no push) to catch that in CI.
-        run: docker build -t dev-sandbox:ci sandbox/.devcontainer
+      - name: build image + functional egress smoke test
+        # Two things at once: (a) the Dockerfile is BUILT (hadolint/Trivy only
+        # lint/scan it), catching a build that lints clean but breaks; (b) the image
+        # is BOOTED and the egress lock is asserted end-to-end. The gating assertions
+        # (firewall sentinel up, off-allowlist host blocked, non-CONNECT cleartext
+        # refused) are internet-INDEPENDENT — squid denies them locally — so this is a
+        # deterministic gate; only the on-allowlist reachability check needs egress and
+        # it is a soft warning. Needs NET_ADMIN for iptables, hence a real boot here
+        # rather than in the self-contained lint jobs above.
+        run: RUNTIME=docker IMAGE=dev-sandbox:ci ./test/egress-smoke.sh
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Trivy — Dockerfile / IaC misconfiguration scan (HIGH/CRITICAL). The `misconfig`
@@ -241,7 +247,7 @@ jobs:
       - vendored
       - dockerfile
       - squid
-      - docker-build
+      - egress-test
       - trivy-scan
     if: always()
     steps:
