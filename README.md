@@ -13,6 +13,32 @@ so it exists in ONE place — keep it current if a project moves, or the vendore
 copies silently stop updating. That drift is exactly the bug that left 3 of 4
 containers stale before this repo was introduced.
 
+## Setup / first run
+
+On a fresh clone, once:
+
+```sh
+make setup     # enable the tracked pre-commit gate: git config core.hooksPath .githooks
+```
+
+Without this the leak-audit + drift pre-commit gate is **silently skipped** — git
+does not carry `core.hooksPath` across a clone. (`make help` lists the other
+targets: `sync`, `check`, `audit`.)
+
+`sync.sh` / `audit.sh` locate the managed sibling devcontainers via `paths.sh`,
+which defaults to this machine's layout. Override in the environment if yours
+differs:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `CODE_ROOT` | `/Users/computer/Code` | Parent of the sibling repos (Vision, Watchman, Napoleon-relay, git-agent) |
+| `BRAIN_DC` | `…/Brain/.devcontainer` | Brain's devcontainer (lives outside `CODE_ROOT`) |
+| `EGRESS_REPO` | this repo's root (auto) | LockBox root; the in-repo `sandbox/.devcontainer` target derives from it |
+| `EGRESS_SELF_ONLY` | `0` | `1` restricts sync/check to the in-repo `sandbox/.devcontainer` only (used by CI) |
+
+A missing sibling target is a HARD failure in `sync.sh` (pass `--allow-missing` to
+downgrade to a warning).
+
 ## Files
 
 - `init-firewall.sh` — iptables default-deny; egress allowed only for the squid
@@ -36,11 +62,14 @@ containers stale before this repo was introduced.
 
   Not vendored: each project's `bin/verify-pins` (launch-integrity check) is a
   per-project, self-contained copy because its baked pin-manifest path differs.
-- `audit.sh` — leak check: scans the committed devcontainer/egress/installer files
-  for hardcoded secrets and private keys (exits non-zero on a hit). The sandboxes
-  forward credentials at runtime and must never bake them in; run this before
-  committing (it makes a good pre-commit hook). Verified to catch GitHub / Anthropic
-  / AWS / Slack token formats and `BEGIN … PRIVATE KEY` blocks.
+- `audit.sh` — leak check: scans this repo's STAGED / tracked files via the git
+  index (`git show :<file>`, so a stage-then-clean can't sneak a secret past it —
+  and untracked/sibling files don't cause false positives) for hardcoded secrets
+  and private keys, exiting non-zero on a hit. The sandboxes forward credentials at
+  runtime and must never bake them in; it runs as the pre-commit gate and in CI.
+  Catches GitHub / Anthropic / OpenAI / Stripe / AWS / Slack token formats and
+  `BEGIN … PRIVATE KEY` blocks (public `.pem` certs are gated on content, not
+  extension, so they don't false-positive).
 
 ## Allowlist model (base + overlay)
 
