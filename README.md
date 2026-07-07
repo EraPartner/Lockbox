@@ -56,9 +56,15 @@ downgrade to a warning).
   `.devcontainer/` by `sync.sh` — edit it HERE, not the copies.
 - `paths.sh` — the canonical list of managed `.devcontainer` dirs, sourced by both
   `sync.sh` and `audit.sh`.
-- `sync.sh` — copies `init-firewall.sh` / `squid.conf` / `launcher-common.sh` into
+- `sync.sh` — vendors `init-firewall.sh` / `squid.conf` / `launcher-common.sh` into
   each project's `.devcontainer/` and generates each project's baked `allowlist.txt`
-  from `base-allowlist.txt` + that project's `allowlist.extra.txt`.
+  from `base-allowlist.txt` + that project's `allowlist.extra.txt`. Each vendored copy
+  is the canonical content plus a deterministic **provenance stamp** (`LockBox
+  v<VERSION> · canonical sha256:…`), so a baked container self-identifies its
+  egress-lock generation; the drift check regenerates and verifies that stamp rather
+  than expecting byte-identical files.
+- `VERSION` / `CHANGELOG.md` — the single-source version stamped into the vendored
+  copies, and the release history. Bump `VERSION`, run `./sync.sh`, tag `v<VERSION>`.
 
   Not vendored: each project's `bin/verify-pins` (launch-integrity check) is a
   per-project, self-contained copy because its baked pin-manifest path differs.
@@ -101,6 +107,10 @@ no `compose.yaml` files (the old Docker Compose configs are archived under
 
 # before committing — verify nothing baked a secret in:
 ./audit.sh
+
+# optionally — boot the image and prove the egress lock still enforces end-to-end
+# (needs a container runtime; off-allowlist blocked + non-CONNECT cleartext refused):
+make test
 ```
 
 ## Per-project wiring (set once)
