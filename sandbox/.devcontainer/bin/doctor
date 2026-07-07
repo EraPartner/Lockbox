@@ -18,7 +18,7 @@ if ( : > "$WS/.doctor.$$" ) 2>/dev/null; then rm -f "$WS/.doctor.$$"; ok "worksp
 git -C "$WS" rev-parse --short HEAD >/dev/null 2>&1 && ok "git read ops work (HEAD: $(git -C "$WS" rev-parse --short HEAD 2>/dev/null))" || note "not a git repo (or no commits) — fine for non-git targets"
 
 echo "== Toolchain =="
-for b in node npm claude git python3; do
+for b in node npm claude gh git python3; do
   command -v "$b" >/dev/null 2>&1 && ok "$b present ($("$b" --version 2>/dev/null | head -1))" || bad "$b missing"
 done
 
@@ -39,15 +39,31 @@ echo "== Egress lock (allowlist-enforced) =="
 [[ -f /run/egress-firewall-ok ]] && ok "firewall sentinel present" || bad "firewall sentinel missing (/run/egress-firewall-ok)"
 pgrep -x squid >/dev/null 2>&1 && ok "squid running" || bad "squid not running"
 (exec 3<>/dev/tcp/127.0.0.1/3128) 2>/dev/null && ok "proxy listening on 127.0.0.1:3128" || bad "proxy not listening on :3128"
-curl -sS --max-time 12 -o /dev/null -w '%{http_code}' https://api.anthropic.com/ 2>/dev/null | grep -qE '^[0-9]' \
-  && ok "Anthropic API reachable via proxy" || note "could not reach api.anthropic.com"
+anthropic_code="$(curl -sS --max-time 12 -o /dev/null -w '%{http_code}' https://api.anthropic.com/ 2>/dev/null || true)"
+# curl prints 000 on a connect/proxy failure. The old `grep '^[0-9]'` matched 000
+# too, so this check could NEVER fail. Require a real HTTP status (1xx–5xx); any
+# response means the proxy reached the host (403/401 still count as reachable).
+if [[ "$anthropic_code" =~ ^[1-5][0-9][0-9]$ ]]; then
+  ok "Anthropic API reachable via proxy (HTTP $anthropic_code)"
+else
+  note "could not reach api.anthropic.com (curl status: ${anthropic_code:-none})"
+fi
 if curl -sS --max-time 8 -o /dev/null https://example.com/ 2>/dev/null; then
   bad "DENIED host example.com was reachable — allowlist not enforced!"
 else ok "denied host blocked (example.com)"; fi
 echo "  (effective allowlist: $(grep -cvE '^\s*#|^\s*$' /etc/squid/allowlist.txt 2>/dev/null || echo '?') hosts)"
 
 echo "== LLM credentials =="
-[[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}${ANTHROPIC_API_KEY:-}${ANTHROPIC_AUTH_TOKEN:-}" ]] && ok "Claude token in env" || bad "no Claude token (set dev-sandbox-claude-code-token in Keychain)"
+if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}${ANTHROPIC_API_KEY:-}${ANTHROPIC_AUTH_TOKEN:-}" ]]; then
+  ok "Claude token in env"
+else
+  # The launcher forwards the token via the FINAL `claude` exec's env (bin/dev's
+  # EXEC_ENV), NOT `container run -e`, so a doctor run from a SEPARATE `container
+  # exec` won't see it even though the launched session does. So this is a note,
+  # not a hard fail — running doctor standalone shouldn't report a false negative.
+  note "no Claude token in THIS env — expected if you ran doctor via a separate 'container exec'."
+  note "  It is injected into the launched 'claude' session (or set dev-sandbox-claude-code-token in Keychain)."
+fi
 
 echo "== Trust model =="
 note "Workspace is READ-WRITE and egress is allowlist-locked. No push token is"

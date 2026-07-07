@@ -8,6 +8,16 @@ set -euo pipefail
 STAGE=/home/dev/.claude-stage
 
 # Auto-pull the sanitized host Claude config into the container on every start.
+# ASYMMETRIC BY DESIGN — the two config surfaces merge in OPPOSITE directions:
+#   - the dot-claude tree (settings, agents, commands, …) is HOST-newer-wins
+#     (rsync --update): host edits propagate in, but a file the container touched
+#     more recently is kept.
+#   - .claude.json (below) is CONTAINER-authoritative (`.[1] * .[0]`, container
+#     overriding the staged host copy). This deliberately preserves in-container
+#     session / per-project state across a warm restart instead of clobbering it
+#     with the static staged snapshot each start. Consequence: host .claude.json
+#     edits do NOT propagate to an already-created container (rebuild to re-seed);
+#     the staged copy only fills in keys the container doesn't already have.
 if [[ -d "$STAGE/dot-claude" && -d /home/dev/.claude ]]; then
   rsync -a --update --ignore-errors "$STAGE/dot-claude/" /home/dev/.claude/ 2>/dev/null || true
 fi

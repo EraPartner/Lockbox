@@ -1,6 +1,6 @@
 # Generic universal full-dev sandbox
 
-One hardened container image, **any** project. Run `dev-claude` from inside any
+One hardened container image, **any** project. Run `dev` from inside any
 directory and it routes *that* directory into an egress-locked sandbox and opens
 `claude` there — no per-project `.devcontainer` required. This is the full-dev
 counterpart to the commit-only `git-agent`: same security model, but the
@@ -10,14 +10,20 @@ Use it for projects that don't have (and don't need) their own sandbox — e.g.
 `scrim` and other ad-hoc work. Heavy, stack-specific projects (Vision's
 Postgres+Bun, Watchman) keep their own `.devcontainer`.
 
+> **Not a VS Code devcontainer.** Despite living under `.devcontainer/`, there is
+> **no** `devcontainer.json` here — this is an Apple `container` (`container build`
+> + `container run`) image built and driven entirely by `bin/dev`. VS Code
+> "Reopen in Container" is not supported; `bin/dev` (invoked as `dev`) is the only
+> entry point.
+
 ## Usage
 
 ```sh
 cd ~/Code/scrim
-dev-claude                       # claude, against the scrim repo, RW
-dev-claude --version             # args forward to claude
-DEV_SANDBOX_PORTS="8787" dev-claude   # publish a container port to localhost
-DEV_SANDBOX_SHELL=1 dev-claude        # bash shell instead of claude
+dev                       # claude, against the scrim repo, RW
+dev --version             # args forward to claude
+DEV_SANDBOX_PORTS="8787" dev   # publish a container port to localhost
+DEV_SANDBOX_SHELL=1 dev        # bash shell instead of claude
 ```
 
 Each target directory gets its **own** container and private home volumes (keyed
@@ -60,7 +66,7 @@ api.openai.com
   proxy starts; fail-closed. Dev sessions run unprivileged.
 - **Launch-integrity pins**: `node/npm/claude/gh/git/python3` are fingerprinted
   at build; `bin/dev` aborts if any drift before opening claude. A real upgrade
-  trips this — rebuild to re-pin: `DEV_SANDBOX_REBUILD=1 dev-claude`.
+  trips this — rebuild to re-pin: `DEV_SANDBOX_REBUILD=1 dev`.
 - Workspace is RW and **no push credential** is present, so a compromised agent
   can alter local files but cannot push or exfiltrate beyond the allowlist.
 - **Host-executed git paths are locked RO.** Git hooks run on your *Mac* (you

@@ -24,6 +24,13 @@ ENV TZ="$TZ"
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Base utilities + a non-root `dev` user (UID 1000). sudo intentionally absent.
+# Reproducibility trade-off (see also the hadolint DL3008 ignore in ci.yml): apt
+# packages and `gh` below are intentionally NOT version-pinned — Debian point
+# releases drop older versions from the mirror, so a hard pin would break cache-miss
+# rebuilds outright. Integrity comes instead from (a) SHA256-verified downloads for
+# the tools that matter most (Node + Python, further down) and (b) the launch-time
+# verify-pins gate, which fails closed on any drift of node/npm/claude/gh/git/
+# python3 against binary-pins.txt.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl gnupg lsb-release xz-utils \
       git less procps jq locales openssh-client unzip rsync \
@@ -110,26 +117,14 @@ RUN npm install -g @anthropic-ai/claude-code@2.1.173 \
 RUN install -d -o dev -g dev -m 0755 /home/dev/.npm-global
 ENV NPM_CONFIG_PREFIX=/home/dev/.npm-global
 
-# Bake lifecycle + helpers (run from the IMAGE, never the mounted workspace).
-COPY post-create.sh  /usr/local/share/dev-sandbox/post-create.sh
-COPY post-start.sh   /usr/local/share/dev-sandbox/post-start.sh
-COPY bin/doctor      /usr/local/bin/dev-sandbox-doctor
-COPY bin/verify-pins /usr/local/bin/dev-sandbox-verify-pins
-RUN chmod 0755 /usr/local/bin/dev-sandbox-doctor /usr/local/bin/dev-sandbox-verify-pins
-# Bake privileged scripts (root-owned, source-only repo copies).
-COPY init-firewall.sh /usr/local/sbin/egress-firewall
-COPY perms-fix.sh     /usr/local/sbin/dev-sandbox-perms-fix
-COPY entrypoint.sh    /usr/local/sbin/dev-sandbox-entrypoint
-COPY squid.conf       /etc/squid/squid.conf
-COPY allowlist.txt    /etc/squid/allowlist.txt
-RUN chmod 0755 /usr/local/sbin/egress-firewall /usr/local/sbin/dev-sandbox-perms-fix /usr/local/sbin/dev-sandbox-entrypoint \
-  && chown root:root /usr/local/sbin/egress-firewall /usr/local/sbin/dev-sandbox-perms-fix /usr/local/sbin/dev-sandbox-entrypoint
-
 # Inbound ports default to NONE; bin/dev binds a per-run /etc/egress/inbound-ports
 # (RO) over this when DEV_SANDBOX_PORTS is set. The dir must exist for the bind.
 RUN mkdir -p /etc/egress && : > /etc/egress/inbound-ports
 
 # Pre-build the squid TLS-bump cert + cert DB (entrypoint regenerates if missing).
+# Placed BEFORE the lifecycle/allowlist COPY block below so a routine sync.sh
+# allowlist edit — the file that changes most often — does NOT invalidate this
+# (expensive: RSA keygen + cert-DB init) layer on rebuild.
 RUN mkdir -p /etc/squid/certs /var/lib/squid /var/log/squid /var/spool/squid \
   && openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 \
        -subj "/CN=dev-sandbox-egress-proxy" \
@@ -143,9 +138,12 @@ RUN mkdir -p /etc/squid/certs /var/lib/squid /var/log/squid /var/spool/squid \
 RUN install -d -o dev -g dev -m 0700 /home/dev/.claude \
  && install -d -o dev -g dev -m 0755 /home/dev/.config /home/dev/.config/gh /home/dev/.local
 
-# Pin the agent's executables: record SHA-256 of each binary PATH resolves to,
-# so dev-sandbox-verify-pins can fail-closed on drift at launch. A legitimate
-# tool upgrade changes these hashes — rebuild the image to re-pin.
+# Pin the agent's executables: record SHA-256 of each binary PATH resolves to, so
+# dev-sandbox-verify-pins can fail-closed on drift at launch. A legitimate tool
+# upgrade changes these hashes — rebuild the image to re-pin. This fingerprints only
+# the tools installed above (none of the COPY'd files), so it too sits BEFORE the
+# frequently-edited COPY block, and BEFORE the setuid strip (which changes only mode
+# bits, not the hashed content).
 RUN set -eux; \
     pinfile=/usr/local/share/dev-sandbox/binary-pins.txt; \
     mkdir -p /usr/local/share/dev-sandbox; \
@@ -158,7 +156,27 @@ RUN set -eux; \
     chmod 0644 "$pinfile"; \
     cat "$pinfile"
 
-# Strip ALL setuid/setgid bits image-wide (defense-in-depth).
+# Bake lifecycle + helpers + privileged scripts + squid.conf + the generated
+# allowlist LAST (only the setuid strip follows). These are exactly the layers a
+# routine sync.sh edit changes, so keeping them after cert-gen + pin-gen means a
+# rebuild re-runs only these cheap COPYs + the strip — not the expensive layers
+# above. (Run from the IMAGE, never the mounted workspace.)
+COPY post-create.sh  /usr/local/share/dev-sandbox/post-create.sh
+COPY post-start.sh   /usr/local/share/dev-sandbox/post-start.sh
+COPY bin/doctor      /usr/local/bin/dev-sandbox-doctor
+COPY bin/verify-pins /usr/local/bin/dev-sandbox-verify-pins
+RUN chmod 0755 /usr/local/bin/dev-sandbox-doctor /usr/local/bin/dev-sandbox-verify-pins
+# Privileged scripts (root-owned, source-only repo copies).
+COPY init-firewall.sh /usr/local/sbin/egress-firewall
+COPY perms-fix.sh     /usr/local/sbin/dev-sandbox-perms-fix
+COPY entrypoint.sh    /usr/local/sbin/dev-sandbox-entrypoint
+COPY squid.conf       /etc/squid/squid.conf
+COPY allowlist.txt    /etc/squid/allowlist.txt
+RUN chmod 0755 /usr/local/sbin/egress-firewall /usr/local/sbin/dev-sandbox-perms-fix /usr/local/sbin/dev-sandbox-entrypoint \
+  && chown root:root /usr/local/sbin/egress-firewall /usr/local/sbin/dev-sandbox-perms-fix /usr/local/sbin/dev-sandbox-entrypoint
+
+# Strip ALL setuid/setgid bits image-wide (defense-in-depth). MUST be the last RUN
+# so it covers every file COPY'd above.
 RUN find / -xdev -type f -perm /6000 -exec chmod -s {} + 2>/dev/null || true
 
 WORKDIR /workspaces/project

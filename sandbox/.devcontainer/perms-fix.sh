@@ -2,9 +2,10 @@
 # /usr/local/sbin/dev-sandbox-perms-fix
 #
 # Image-baked helper that performs ONLY the ownership / permission repairs the
-# sandbox needs at start time. Invoked by the root ENTRYPOINT (the container has
-# no sudo — it runs with no-new-privileges, and all privileged setup happens in
-# the entrypoint). The repo copy at .devcontainer/perms-fix.sh is the source.
+# sandbox needs at start time. Invoked by the root ENTRYPOINT (the container has no
+# sudo and all privileged setup happens in the entrypoint; note apple/container has
+# no --security-opt=no-new-privileges equivalent — see entrypoint.sh / README). The
+# repo copy at .devcontainer/perms-fix.sh is the source.
 #
 # Takes no arguments and performs no caller-parameterised operations.
 
