@@ -21,10 +21,17 @@ on:
     paths-ignore:
       - "docs/**"
       - "*.md"
+  # pull_request deliberately has NO paths-ignore. With "CI Complete" as a required
+  # status check, a docs-only PR that skipped the whole workflow would never produce
+  # that check and would sit permanently "Expected — Waiting", blocking merge.
+  # Running full CI on a docs-only PR is cheap by comparison. `branches: [main]`
+  # matches codeql.yml so CI and CodeQL cover the same PR scope.
   pull_request:
-    paths-ignore:
-      - "docs/**"
-      - "*.md"
+    branches: [main]
+  schedule:
+    # Weekly re-scan (Trivy misconfig + gitleaks) against updated policy/rule DBs
+    # even when the repo is dormant. Monday 04:00 UTC, staggered from CodeQL (03:00).
+    - cron: "0 4 * * 1"
   workflow_dispatch:
 
 concurrency:
@@ -93,27 +100,21 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   vendored:
-    name: in-repo vendored copies match canonical
+    name: in-repo vendored copies + generated allowlist match canonical
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
-      - name: cmp canonical vs sandbox/.devcontainer
-        run: |
-          set -euo pipefail
-          dst=sandbox/.devcontainer
-          rc=0
-          for f in init-firewall.sh squid.conf launcher-common.sh; do
-            if cmp -s "$f" "$dst/$f"; then
-              echo "ok    $dst/$f matches canonical $f"
-            else
-              echo "DRIFT $dst/$f differs from canonical $f — run ./sync.sh" >&2
-              rc=1
-            fi
-          done
-          exit "$rc"
+      - name: sync.sh --check (self-only)
+        # EGRESS_SELF_ONLY restricts the target list to THIS repo's sandbox/.devcontainer
+        # (the sibling fleet repos aren't checked out here). Unlike the old hand-rolled
+        # cmp loop, this ALSO regenerates + compares the sandbox allowlist.txt via the
+        # same gen_allowlist sync uses — so a base-allowlist.txt edit that wasn't
+        # re-synced is caught, not just the three verbatim files. The vendored file
+        # list comes from vendored-files.txt (single source, shared with sync.sh).
+        run: EGRESS_SELF_ONLY=1 ./sync.sh --check
 
   dockerfile:
     name: dockerfile lint
@@ -131,6 +132,48 @@ jobs:
           # is rebuilt+re-pinned via binary-pins.txt, not apt version pins.
           ignore: DL3008
           failure-threshold: error
+
+  squid:
+    name: squid.conf syntax (squid -k parse)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - name: squid -k parse
+        # squid.conf isn't shell, so the shell job ignores it; validate its directive
+        # syntax here so a semantically-broken proxy config fails CI instead of only
+        # at container start. squid resolves the ACL file + tls-cert paths at parse
+        # time, so stage stub copies at the absolute paths squid.conf references.
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends squid-openssl openssl
+          sudo install -d /etc/squid/certs /var/lib/squid /var/log/squid /var/spool/squid
+          sudo cp squid.conf /etc/squid/squid.conf
+          sudo cp sandbox/.devcontainer/allowlist.txt /etc/squid/allowlist.txt
+          openssl req -x509 -newkey rsa:2048 -days 1 -nodes \
+            -subj "/CN=ci-squid-parse" -keyout /tmp/k.pem -out /tmp/c.pem >/dev/null 2>&1
+          sudo bash -c 'cat /tmp/k.pem /tmp/c.pem > /etc/squid/certs/bump.pem'
+          sudo /usr/lib/squid/security_file_certgen -c -s /var/lib/squid/ssl_db -M 4MB
+          sudo chown -R proxy:proxy /etc/squid/certs /var/lib/squid /var/log/squid /var/spool/squid
+          sudo squid -k parse
+
+  docker-build:
+    name: devcontainer image builds
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
+      - name: docker build (no push)
+        # hadolint + Trivy lint/scan the Dockerfile but never BUILD it; a Dockerfile
+        # that lints clean but fails `docker build` (bad apt package, broken pin,
+        # unreachable base/release URL) would otherwise merge and only break on the
+        # next developer rebuild. Build the image (no push) to catch that in CI.
+        run: docker build -t dev-sandbox:ci sandbox/.devcontainer
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Trivy — Dockerfile / IaC misconfiguration scan (HIGH/CRITICAL). The `misconfig`
@@ -188,19 +231,27 @@ jobs:
     name: Quality Gate
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    # INVARIANT: every job above (except ci-complete) MUST be listed here. A job
+    # that runs but is omitted from `needs` can fail while this gate stays green —
+    # so when you add a job, add it to this list too.
     needs:
       - shell
       - secrets
       - secrets-scan
       - vendored
       - dockerfile
+      - squid
+      - docker-build
       - trivy-scan
     if: always()
     steps:
       - name: Check all gates passed
         run: |
           results='${{ toJson(needs.*.result) }}'
-          if echo "$results" | grep -qE '"(failure|cancelled)"'; then
+          # `skipped` counts as a failure too: a required job that never ran (a
+          # future `if:` evaluating false, or a needs-skip from an upstream failure)
+          # must NOT pass the gate silently.
+          if echo "$results" | grep -qE '"(failure|cancelled|skipped)"'; then
             echo "Quality gate failed. Job results: $results"
             exit 1
           fi
@@ -220,7 +271,7 @@ jobs:
       - name: Check pipeline passed
         run: |
           results='${{ toJson(needs.*.result) }}'
-          if echo "$results" | grep -qE '"(failure|cancelled)"'; then
+          if echo "$results" | grep -qE '"(failure|cancelled|skipped)"'; then
             echo "CI pipeline failed. Job results: $results"
             exit 1
           fi

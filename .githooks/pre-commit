@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Tracked pre-commit gate for LockBox. Enabled with:
-#   git config core.hooksPath .githooks
-# (sync.sh sets this up is NOT automatic — run the line once per clone, or it is
-# already set in this repo's .git/config.)
+# Tracked pre-commit gate for LockBox. git does NOT carry core.hooksPath across a
+# clone, so a fresh checkout must enable it ONCE:
+#   make setup            # or:  git config core.hooksPath .githooks
+# Until then this hook does not run and the leak/drift gate is silently skipped —
+# see the README "Setup / first run" section.
 #
 # 1) Leak scan: no hardcoded secrets / private keys in the committed sandbox files.
 # 2) Drift check: every vendored copy + generated allowlist is in sync with the

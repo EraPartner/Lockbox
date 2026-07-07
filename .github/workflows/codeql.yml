@@ -21,6 +21,13 @@ on:
   schedule:
     - cron: "0 3 * * 1" # weekly, Monday 03:00 UTC — full scan even without code changes
 
+# Cancel a superseded run when new commits land on the same ref, so rapid pushes
+# don't queue overlapping CodeQL analyses (mirrors ci.yml). The weekly schedule runs
+# on `main`, so its group key differs from PR refs and won't be cancelled by them.
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
 # Deny all permissions by default; each job opts in to only what it needs.
 permissions: {}
 
