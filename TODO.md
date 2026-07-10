@@ -287,6 +287,40 @@ and over-scoped. CI shell-injection and `sync.sh --check` correctness were check
 - **Allowlist wildcard breadth** — squid consumes the file via `dstdomain`/`ssl::server_name` (`squid.conf:22-23`); entries have **no** leading dot, so each matches its exact host only (no subdomain wildcarding). Tighter than the base-comment's "leading dot" note implies. (raw/objects breadth is the known Pass-4 item.)
 - **pre-commit exit propagation** — `set -euo pipefail` (`:11`) + direct invocation of `audit.sh` / `sync.sh --check` means a non-zero from either aborts the hook and blocks the commit. Correct.
 
+### Pass 8 — Performance review (2026-07-10)
+
+Dedicated performance sweep (wall-clock, subprocess count, CI minutes, image-build time,
+container start latency). Deduped against earlier passes — the following performance items
+were already found and are NOT repeated below: audit.sh grep-per-pattern (Pass 1),
+devcontainer double-scan (Pass 1), Dockerfile COPY-before-cert-gen layer ordering (Pass 2),
+unpinned apt (Pass 2), CodeQL missing concurrency group (Pass 3).
+
+Progress tracker (for the next agent if interrupted):
+
+- [x] Pass 8a: Core shell tooling perf — audit.sh, sync.sh, paths.sh, launcher-common.sh, init-firewall.sh, .githooks/pre-commit, Makefile, test/egress-smoke.sh — DONE 2026-07-10 (findings below)
+- [ ] Pass 8b: Sandbox runtime perf — Dockerfile, entrypoint.sh, post-create.sh, post-start.sh, bin/dev, bin/doctor, bin/verify-pins, perms-fix.sh, squid.conf (runtime tuning)
+- [ ] Pass 8c: CI wall-clock/minutes — .github/workflows/ci.yml, codeql.yml (caching, checkout depth, job graph, redundant work)
+
+Findings are appended per sub-pass below as they complete.
+
+#### Pass 8a — Core shell tooling (audit.sh, sync.sh, paths.sh, launcher-common.sh, init-firewall.sh, pre-commit, Makefile, egress-smoke)
+
+- [ ] **[P2]** `sync.sh:167-198` — The regenerated reference vendored copy is target-independent (it depends only on the canonical file's content, version, and hash), yet `gen_vendored` is re-run inside the per-target loop: in `--check` mode once per file per target (6 targets × 3 files = 18 runs, lines 170-177), and in sync mode **twice** per file per target (write at line 194 + verify at line 195 = 36 runs). Each run spawns `mktemp`, a `dirname` subshell, and `sha256_of` — and on the macOS host `sha256_of` falls back to `shasum`, a Perl script with ~40-60ms startup each. That is 18-36 shasum invocations where 3 suffice. *Impact:* roughly 1-2s of avoidable latency per run of `sync.sh` or `sync.sh --check` on macOS — and `--check` runs on **every commit** via `.githooks/pre-commit`, so this is per-commit latency. *Fix:* before the target loop, generate each canonical file's reference copy once into a scratch temp (one `gen_vendored` per file, 3 total); in check mode `cmp` that reference against each target's copy; in sync mode `cp` the reference into place (with the right mode) and `cmp` for the write-verify. Hash memoization alone (cache `sha256_of` per canonical path) would also capture most of the win with a smaller diff.
+- [ ] **[P3]** `audit.sh:58-87` — Distinct from the already-fixed per-pattern-grep issue: the scan still spawns ~5-6 processes **per tracked file** (`mktemp`, `git show`, `grep -Iq`, `grep -nE | cut`, `rm`) and writes every staged blob to a temp file that is then read up to 3 times (binary probe at line 74, secret scan at line 78, and the `.pem` grep at line 71). With 36 tracked files that is ~200 fork/execs plus 36 temp-file write/read cycles on every commit, scaling linearly with repo growth; on macOS (slow fork) this is a few hundred ms of the pre-commit gate. *Fix:* do the whole secret scan in one process with `git grep -I -nE "$SECRET_RE" --cached` (searches the index directly — same semantics as `git show :<f>` per file — skips binaries via `-I`, no temp files), post-processing its `file:line:` output for the file:line-only report; keep the filename checks (`id_rsa`/`.key`) as a loop over `git ls-files` output, extracting blobs only for `*.pem` files (typically zero).
+- [ ] **[P3]** `launcher-common.sh:31-33` — `sandbox_stage_claude_config` copies `plugins/` and `statusline/` wholesale with `cp -a` (line 31) **including** their `.git` directories, then deletes those `.git` dirs with `find ... -exec rm -rf` (line 33). Plugin/marketplace checkouts are git clones whose `.git` can be many MB, so every launcher start pays full copy I/O for data that is immediately deleted, on the interactive sandbox-start path. *Fix:* exclude at copy time, e.g. for the `plugins`/`statusline` entries use `tar -C "$src" --exclude .git -cf - "$item" | tar -C "$dst/dot-claude" -xf -` (bsdtar on macOS and GNU tar both support `--exclude`; bash-3.2 safe), keeping `cp -a` for the plain-file items.
+
+Checked and found clean (Pass 8a — do not re-investigate):
+
+- `audit.sh` known perf items verified fixed in current code: single combined `SECRET_RE` alternation (lines 36-50), no double-scan of sandbox/.devcontainer (scans `git ls-files` once; paths.sh no longer sourced).
+- `sync.sh:71-81` `_emit_extras_deduped` is O(extras × base) with a pipeline per extra line — extras are a handful of lines; single-digit ms, not worth churn.
+- `sync.sh` repeated `domains()` calls and the per-target allowlist mktemp/mv — negligible / needed for atomicity.
+- `paths.sh` — one subshell, nothing to optimize.
+- `launcher-common.sh` other functions (`sandbox_forward_llm_creds`, `sandbox_git_ro_mounts`, `sandbox_warn_stale_allowlist`, printf|sed escapes) — fine; the `find` calls at :33/:46 are bounded to the staged dot-claude tree.
+- `init-firewall.sh` — ~30 sequential `iptables` execs; `iptables-restore` would save well under 100ms of a boot dominated by container start + squid, at the cost of the readable rule-by-rule `-C` verification structure. No sleeps/polling.
+- `test/egress-smoke.sh` — 1s-interval polls are appropriate; run time dominated by image build; assertions 3-5 inherently sequential.
+- `.githooks/pre-commit` — sequential audit + `sync.sh --check` is the right call (parallelizing interleaves failure output for ~1s saved, less once the sync.sh P2 lands).
+- `Makefile` — trivial delegation targets.
+
 ---
 
 ## Suggested starting order for the next agent
