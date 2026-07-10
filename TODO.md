@@ -298,7 +298,7 @@ unpinned apt (Pass 2), CodeQL missing concurrency group (Pass 3).
 Progress tracker (for the next agent if interrupted):
 
 - [x] Pass 8a: Core shell tooling perf — audit.sh, sync.sh, paths.sh, launcher-common.sh, init-firewall.sh, .githooks/pre-commit, Makefile, test/egress-smoke.sh — DONE 2026-07-10 (findings below)
-- [ ] Pass 8b: Sandbox runtime perf — Dockerfile, entrypoint.sh, post-create.sh, post-start.sh, bin/dev, bin/doctor, bin/verify-pins, perms-fix.sh, squid.conf (runtime tuning)
+- [x] Pass 8b: Sandbox runtime perf — Dockerfile, entrypoint.sh, post-create.sh, post-start.sh, bin/dev, bin/doctor, bin/verify-pins, perms-fix.sh, squid.conf (runtime tuning) — DONE 2026-07-10 (findings below)
 - [ ] Pass 8c: CI wall-clock/minutes — .github/workflows/ci.yml, codeql.yml (caching, checkout depth, job graph, redundant work)
 
 Findings are appended per sub-pass below as they complete.
@@ -320,6 +320,24 @@ Checked and found clean (Pass 8a — do not re-investigate):
 - `test/egress-smoke.sh` — 1s-interval polls are appropriate; run time dominated by image build; assertions 3-5 inherently sequential.
 - `.githooks/pre-commit` — sequential audit + `sync.sh --check` is the right call (parallelizing interleaves failure output for ~1s saved, less once the sync.sh P2 lands).
 - `Makefile` — trivial delegation targets.
+
+#### Pass 8b — Sandbox runtime (Dockerfile, entrypoint, post-*, bin/dev, doctor, verify-pins, perms-fix, squid.conf)
+
+- [ ] **[P3]** `sandbox/.devcontainer/Dockerfile:178-180` — the image-wide setuid/setgid strip (`find / -xdev -type f -perm /6000 -exec chmod -s {} +`) is the last RUN, placed *after* the frequently-edited COPY block (lines 164-176). The deliberate reordering that put cert-gen/pin-gen before the COPYs (known Pass-2 fix) stopped short of this layer: every routine `sync.sh` allowlist or lifecycle-script edit still re-runs a full-filesystem traversal of the ~1.5 GB image (bookworm-slim + build-essential + Node + CPython ≈ low hundreds of thousands of inodes) inside the apple/container builder VM. *Impact:* roughly 10-40s added to every routine rebuild — likely the single most expensive step left on that rebuild path. *Fix:* move the image-wide find to just before the COPY block (after the last package/tool install), and keep last-layer coverage of the COPY'd files with a cheap scoped pass, e.g. `find /usr/local/sbin /usr/local/bin /usr/local/share/dev-sandbox /etc/squid -xdev -type f -perm /6000 -exec chmod -s {} +` — same defense-in-depth guarantee (the COPY'd paths are also already explicitly `chmod 0755`, which clears suid), at near-zero cost.
+- [ ] **[P3]** `sandbox/.devcontainer/bin/dev:229-235` — the proxy-wait is a standalone `container exec ... bash -lc` that runs on EVERY launch, immediately followed by a second `container exec` for the lifecycle replay. On the common warm-reuse path the wait succeeds on its first `/dev/tcp` probe, so the entire exec (CLI process + XPC round-trip + login shell reading /etc/profile) is pure overhead, ~100-300ms per launch in the interactive path. On cold starts the `sleep 1` poll granularity (also in `post-create.sh:11-14`) overshoots squid readiness by ~0.5s on average. *Impact:* one redundant container-CLI round-trip on every single `dev` invocation, plus ~0.5-1s avg extra on cold starts. *Fix:* fold the wait loop into the top of the step-6 lifecycle exec (one `container exec` doing wait → post-create/post-start) and use `sleep 0.2` in the poll. Do NOT simply delete the wait — it is the barrier that prevents `post-start.sh`'s `/run/egress-firewall-ok` check (post-start.sh:37-43) from racing the still-running entrypoint on a `container start` of a stopped container; it just doesn't need to be its own exec. (Merging verify-pins too is possible but would sacrifice the deliberate clean-shell `-e BASH_ENV=` isolation at bin/dev:246 — not recommended.)
+
+Checked and found clean (Pass 8b — do not re-investigate):
+
+- `Dockerfile` layer ordering otherwise: the known Pass-2 reorder is verified in place — cert-gen (128-135), volume-dir pre-create (138-139), pin-gen (147-157) all precede the COPY block; a routine allowlist edit re-runs only cheap COPYs, two chmod layers, and (per finding above) the find. Node/Python are SHA256-verified pinned-URL downloads, docs excluded, no GitHub-API resolution; the two `apt-get update` layers are the standard keyring pattern and only hit on cache-miss rebuilds.
+- `.dockerignore` — host-only files (bin/dev, launcher-common.sh, README.md, allowlist.extra.txt) excluded from build context, so editing the launcher does not bust the build cache.
+- `entrypoint.sh` warm-start path — cert-gen and ssl_db init guarded by existence checks (:45, :54) so RSA keygen never re-runs; keep-alive loop uses a 30s `sleep 30 & wait` tick (trap-responsive) with only pgrep + stat + chmod per tick; access-log rotation capped at 50 MB; per-boot `chown -R` (:61) is metadata-only over a handful of files.
+- `bin/dev` build skip verified: `container image inspect` gate at :134 means the builder VM spins up only on missing image or `DEV_SANDBOX_REBUILD=1`, and the builder is stopped afterward to release ~2 GB RAM. `squid -k reconfigure` (:154-157) fires only when the staged allowlist checksum actually changed. Warm-reuse path is otherwise minimal in `container` CLI calls.
+- `bin/verify-pins` — hashes 6 binaries (~200-300 MB) once per launch, sub-second; appropriate cost for a fail-closed integrity gate.
+- `perms-fix.sh` — `chown -R` runs only on top-level owner mismatch (first volume mount); no-op on warm starts.
+- `post-create.sh` — safe-chain npm install is once-per-container and intentionally synchronous before the first agent session.
+- `post-start.sh` per-start cost — `rsync -a --update` is metadata-bound on a converged tree; one jq merge; four rm -rf of usually-absent dirs. Negligible.
+- `squid.conf` runtime tuning — `cache deny all` + splice-only CONNECT means no object cache, no bumping; sslcrtd helpers idle (a few MB, not worth tuning for one user); `shutdown_lifetime 1 second` already minimizes stop latency; built-in positive DNS cache adequate; removed `dns_v4_first` is safe latency-wise because squid 6.x uses Happy Eyeballs, so the ip6tables-DROPped IPv6 attempt costs ~250ms once per host, not a connect_timeout stall.
+- `bin/doctor` — network probes bounded by `--max-time` 12/8; six `--version` invocations are diagnostic-path only.
 
 ---
 
