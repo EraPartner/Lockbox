@@ -225,12 +225,20 @@ CID="$NAME"
 # keeps it WARM for instant reuse. (F: orphaned-container on early abort)
 sandbox_install_autosync_trap "dev" "$CID" "${DEV_SANDBOX_AUTOSYNC:-0}" "${DEV_SANDBOX_STOP_ON_EXIT:-1}"
 
-# Wait for the egress proxy (entrypoint applies firewall → squid).
-container exec "$NAME" bash -lc 'for i in $(seq 1 30); do (exec 3<>/dev/tcp/127.0.0.1/3128) 2>/dev/null && break; sleep 1; done' || true
-
-# --- 6) Replay lifecycle as dev (post-create once, post-start every start) ----
+# --- 6) Wait for the egress proxy, then replay lifecycle as dev ---------------
+# (post-create once, post-start every start). The proxy-wait (entrypoint applies
+# firewall → squid) runs at the TOP of this exec rather than as its own
+# `container exec`: on the common warm-reuse path the first probe succeeds
+# immediately, so a separate exec paid a full container-CLI + XPC round-trip
+# (~100-300ms) on every launch just to find that out. It is still a required
+# BARRIER — on `container start` of a stopped container it keeps post-start.sh's
+# /run/egress-firewall-ok check from racing the still-running entrypoint — it just
+# doesn't need to be its own exec. 0.2s poll, 150 tries ≈ the same 30s budget.
+# (A probe failure inside `... && break` does not trip set -e; a genuinely absent
+# proxy is caught by post-start.sh's firewall-sentinel check.)
 container exec --user dev "$NAME" bash -lc '
   set -e
+  for _ in $(seq 1 150); do (exec 3<>/dev/tcp/127.0.0.1/3128) 2>/dev/null && break; sleep 0.2; done
   [[ -f /home/dev/.postcreate-done ]] || { bash /usr/local/share/dev-sandbox/post-create.sh && touch /home/dev/.postcreate-done; }
   bash /usr/local/share/dev-sandbox/post-start.sh'
 
