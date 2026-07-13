@@ -155,14 +155,6 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v4
-      - name: install squid (cached apt packages)
-        # Caches the resolved .debs + install snapshot so cache-hit runs skip the
-        # network entirely — the previous bare `apt-get update` + install cost
-        # ~25-50s per run (mostly the index refresh).
-        uses: awalsh128/cache-apt-pkgs-action@553a35bb8ebd9fcabcb1c9451aa4c98e1b4ca8a9 # v1.6.3
-        with:
-          packages: squid-openssl openssl
-          version: 1.0
       - name: squid -k parse
         # squid.conf isn't shell, so the shell job ignores it; validate its directive
         # syntax here so a semantically-broken proxy config fails CI instead of only
@@ -170,6 +162,8 @@ jobs:
         # time, so stage stub copies at the absolute paths squid.conf references.
         run: |
           set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends squid-openssl openssl
           sudo install -d /etc/squid/certs /var/lib/squid /var/log/squid /var/spool/squid
           sudo cp squid.conf /etc/squid/squid.conf
           sudo cp sandbox/.devcontainer/allowlist.txt /etc/squid/allowlist.txt

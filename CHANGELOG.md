@@ -34,7 +34,7 @@ every vendored copy, so a baked container self-identifies its egress-lock genera
   schedule now runs only the rule-DB–dependent scans (Trivy + gitleaks), with the
   gate tolerating the by-design skips; Trivy scans once (SARIF + gating in one
   pass); the `quality-gate`/`ci-complete` pair collapsed into a single
-  "CI Complete" job; the `squid` job's apt packages are cached.
+  "CI Complete" job.
 
 ## [0.1.0] — 2026-07-07
 
