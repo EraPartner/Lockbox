@@ -155,6 +155,19 @@ while IFS= read -r _vf || [[ -n "$_vf" ]]; do
 done < "$HERE/vendored-files.txt"
 (( ${#VENDORED[@]} > 0 )) || { echo "sync: ERROR no vendored files listed in $HERE/vendored-files.txt" >&2; exit 1; }
 
+# A vendored reference copy is TARGET-INDEPENDENT (canonical content + version +
+# canonical SHA-256), so generate each one ONCE up front. Regenerating inside the
+# target loop ran gen_vendored — and its sha256_of, a ~40-60ms Perl `shasum` startup
+# on macOS — once per file per target in check mode and twice per file per target
+# in sync mode (write + verify): 18-36 runs where 3 suffice, paid on EVERY commit
+# via the .githooks/pre-commit `--check`. The loops below cmp/cp against these.
+REF_DIR="$(mktemp -d)" || { echo "sync: ERROR mktemp -d failed" >&2; exit 1; }
+trap 'rm -rf "$REF_DIR"' EXIT
+for f in "${VENDORED[@]}"; do
+  [[ -f "$HERE/$f" ]] || continue
+  gen_vendored "$HERE/$f" "$REF_DIR/$f"
+done
+
 synced=0 skipped=0 drift=0 checked=0
 for dst in "${EGRESS_DEVCONTAINERS[@]}"; do
   if [[ ! -d "$dst" ]]; then
@@ -168,12 +181,10 @@ for dst in "${EGRESS_DEVCONTAINERS[@]}"; do
     # Verify-only: every vendored copy + the generated allowlist must already
     # match what sync WOULD write; any difference is drift (hand-edit / stale).
     for f in "${VENDORED[@]}"; do
-      [[ -f "$HERE/$f" ]] || continue
-      vtmp="$(mktemp)"; gen_vendored "$HERE/$f" "$vtmp"
-      if ! cmp -s "$vtmp" "$dst/$f"; then
+      [[ -f "$REF_DIR/$f" ]] || continue
+      if ! cmp -s "$REF_DIR/$f" "$dst/$f"; then
         echo "DRIFT: $dst/$f differs from canonical $f (content or provenance stamp)" >&2; drift=$((drift + 1))
       fi
-      rm -f "$vtmp"
     done
     tmp="$(mktemp)"; gen_allowlist "$dst" "$project" "$tmp"
     if ! cmp -s "$tmp" "$dst/allowlist.txt"; then
@@ -184,17 +195,19 @@ for dst in "${EGRESS_DEVCONTAINERS[@]}"; do
     continue
   fi
 
-  # Sync: write canonical content + provenance stamp, then VERIFY it landed by
-  # regenerating and cmp'ing (a silently short write would otherwise leave a
-  # stale/partial egress file in place). init-firewall.sh is executable (it runs as
-  # /usr/local/sbin/egress-firewall); the others are 0644.
+  # Sync: install the pre-generated reference copy atomically (same-dir temp + mv,
+  # so an interrupt never leaves a truncated egress file), then VERIFY it landed by
+  # cmp'ing the installed file against the reference (a silently short write would
+  # otherwise leave a stale/partial egress file in place). init-firewall.sh is
+  # executable (it runs as /usr/local/sbin/egress-firewall); the others are 0644.
   for f in "${VENDORED[@]}"; do
-    [[ -f "$HERE/$f" ]] || continue
+    [[ -f "$REF_DIR/$f" ]] || continue
     mode=0644; if [[ "$f" == init-firewall.sh ]]; then mode=0755; fi
-    gen_vendored "$HERE/$f" "$dst/$f" "$mode"
-    vtmp="$(mktemp)"; gen_vendored "$HERE/$f" "$vtmp"
-    cmp -s "$vtmp" "$dst/$f" || { echo "sync: ERROR vendored write verify failed for $dst/$f" >&2; rm -f "$vtmp"; exit 1; }
-    rm -f "$vtmp"
+    vtmp="$(mktemp "$dst/.vendored.XXXXXX")" || { echo "sync: ERROR mktemp failed in $dst" >&2; exit 1; }
+    cp "$REF_DIR/$f" "$vtmp"
+    chmod "$mode" "$vtmp"
+    mv "$vtmp" "$dst/$f"
+    cmp -s "$REF_DIR/$f" "$dst/$f" || { echo "sync: ERROR vendored write verify failed for $dst/$f" >&2; exit 1; }
   done
   gen_allowlist "$dst" "$project"
   echo "synced + generated allowlist ($(domains "$dst/allowlist.txt" | wc -l | tr -d ' ') hosts) -> $dst"

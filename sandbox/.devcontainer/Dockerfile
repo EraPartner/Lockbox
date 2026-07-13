@@ -156,11 +156,18 @@ RUN set -eux; \
     chmod 0644 "$pinfile"; \
     cat "$pinfile"
 
+# Strip ALL setuid/setgid bits image-wide (defense-in-depth). Placed HERE — after
+# the last package/tool install, BEFORE the frequently-edited COPY block below — so
+# a routine sync.sh allowlist/script edit does not re-pay this full-filesystem
+# traversal (~10-40s inside the builder VM) on every rebuild. The COPY'd files that
+# follow are covered by the cheap SCOPED strip in the final layer.
+RUN find / -xdev -type f -perm /6000 -exec chmod -s {} + 2>/dev/null || true
+
 # Bake lifecycle + helpers + privileged scripts + squid.conf + the generated
-# allowlist LAST (only the setuid strip follows). These are exactly the layers a
-# routine sync.sh edit changes, so keeping them after cert-gen + pin-gen means a
-# rebuild re-runs only these cheap COPYs + the strip — not the expensive layers
-# above. (Run from the IMAGE, never the mounted workspace.)
+# allowlist LAST (only the scoped setuid strip follows). These are exactly the
+# layers a routine sync.sh edit changes, so keeping them after cert-gen + pin-gen
+# means a rebuild re-runs only these cheap COPYs + the scoped strip — not the
+# expensive layers above. (Run from the IMAGE, never the mounted workspace.)
 COPY post-create.sh  /usr/local/share/dev-sandbox/post-create.sh
 COPY post-start.sh   /usr/local/share/dev-sandbox/post-start.sh
 COPY bin/doctor      /usr/local/bin/dev-sandbox-doctor
@@ -175,9 +182,13 @@ COPY allowlist.txt    /etc/squid/allowlist.txt
 RUN chmod 0755 /usr/local/sbin/egress-firewall /usr/local/sbin/dev-sandbox-perms-fix /usr/local/sbin/dev-sandbox-entrypoint \
   && chown root:root /usr/local/sbin/egress-firewall /usr/local/sbin/dev-sandbox-perms-fix /usr/local/sbin/dev-sandbox-entrypoint
 
-# Strip ALL setuid/setgid bits image-wide (defense-in-depth). MUST be the last RUN
-# so it covers every file COPY'd above.
-RUN find / -xdev -type f -perm /6000 -exec chmod -s {} + 2>/dev/null || true
+# Scoped setuid/setgid strip over exactly the paths the COPY block above writes —
+# keeps the last-layer coverage the old image-wide strip provided (defense-in-depth;
+# the COPY'd scripts are also explicitly chmod 0755, which clears suid) at near-zero
+# cost instead of a full-filesystem find. MUST stay the last RUN so it covers every
+# file COPY'd above; extend the path list if a COPY ever targets a new directory.
+RUN find /usr/local/sbin /usr/local/bin /usr/local/share/dev-sandbox /etc/squid \
+      -xdev -type f -perm /6000 -exec chmod -s {} + 2>/dev/null || true
 
 WORKDIR /workspaces/project
 

@@ -33,6 +33,10 @@ on:
   schedule:
     # Weekly re-scan (Trivy misconfig + gitleaks) against updated policy/rule DBs
     # even when the repo is dormant. Monday 04:00 UTC, staggered from CodeQL (03:00).
+    # Only trivy-scan + secrets-scan run on this trigger — the deterministic jobs
+    # (shell/secrets/vendored/dockerfile/squid/egress-test) are gated off with
+    # `if: github.event_name != 'schedule'` since their output cannot change on a
+    # dormant repo; the gate job tolerates their `skipped` result on schedule runs.
     - cron: "0 4 * * 1"
   workflow_dispatch:
 
@@ -48,6 +52,10 @@ jobs:
     name: shell scripts (syntax + shellcheck)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    # Deterministic on a dormant repo — skip on the weekly schedule (which exists
+    # only to re-scan against fresh Trivy/gitleaks rule DBs). Same gate on the
+    # other deterministic jobs below.
+    if: github.event_name != 'schedule'
     permissions:
       contents: read
     steps:
@@ -76,6 +84,7 @@ jobs:
     name: leak audit (no baked secrets)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    if: github.event_name != 'schedule'
     permissions:
       contents: read
     steps:
@@ -105,6 +114,7 @@ jobs:
     name: in-repo vendored copies + generated allowlist match canonical
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    if: github.event_name != 'schedule'
     permissions:
       contents: read
     steps:
@@ -122,6 +132,7 @@ jobs:
     name: dockerfile lint
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    if: github.event_name != 'schedule'
     permissions:
       contents: read
     steps:
@@ -139,6 +150,7 @@ jobs:
     name: squid.conf syntax (squid -k parse)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    if: github.event_name != 'schedule'
     permissions:
       contents: read
     steps:
@@ -166,20 +178,36 @@ jobs:
     name: devcontainer builds + egress lock enforces
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    if: github.event_name != 'schedule'
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v4
-      - name: build image + functional egress smoke test
-        # Two things at once: (a) the Dockerfile is BUILT (hadolint/Trivy only
-        # lint/scan it), catching a build that lints clean but breaks; (b) the image
-        # is BOOTED and the egress lock is asserted end-to-end. The gating assertions
-        # (firewall sentinel up, off-allowlist host blocked, non-CONNECT cleartext
-        # refused) are internet-INDEPENDENT — squid denies them locally — so this is a
-        # deterministic gate; only the on-allowlist reachability check needs egress and
-        # it is a soft warning. Needs NET_ADMIN for iptables, hence a real boot here
-        # rather than in the self-contained lint jobs above.
-        run: RUNTIME=docker IMAGE=dev-sandbox:ci ./test/egress-smoke.sh
+      - name: set up buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - name: build image (GHA layer cache)
+        # The Dockerfile is BUILT here (hadolint/Trivy only lint/scan it), catching a
+        # build that lints clean but breaks. Layers are cached in the GHA cache
+        # backend: the Dockerfile is deliberately ordered so routine sync.sh edits
+        # touch only the final cheap COPY layers, and without a persisted cache CI
+        # re-paid the full apt + Node/Python download + npm install build (~4-8 min,
+        # the long pole of the pipeline) on every run. Cache-hit builds take seconds.
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: sandbox/.devcontainer
+          tags: dev-sandbox:ci
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: functional egress smoke test
+        # The image is BOOTED and the egress lock asserted end-to-end. The gating
+        # assertions (firewall sentinel up, off-allowlist host blocked, non-CONNECT
+        # cleartext refused) are internet-INDEPENDENT — squid denies them locally — so
+        # this is a deterministic gate; only the on-allowlist reachability check needs
+        # egress and it is a soft warning. Needs NET_ADMIN for iptables, hence a real
+        # boot here rather than in the self-contained lint jobs above. SKIP_BUILD=1
+        # reuses the image built (with layer caching) in the previous step.
+        run: RUNTIME=docker IMAGE=dev-sandbox:ci SKIP_BUILD=1 ./test/egress-smoke.sh
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Trivy — Dockerfile / IaC misconfiguration scan (HIGH/CRITICAL). The `misconfig`
@@ -200,18 +228,11 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v4
 
-      - name: Run Trivy scan (table — fail on HIGH/CRITICAL)
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          scan-type: fs
-          scan-ref: .
-          scanners: misconfig
-          format: table
-          severity: HIGH,CRITICAL
-          exit-code: "1"
-
-      - name: Run Trivy scan (SARIF — upload to GitHub Security)
-        if: always()
+      - name: Run Trivy scan (SARIF — fail on HIGH/CRITICAL)
+        # ONE scan does both duties: Trivy writes the SARIF report BEFORE applying
+        # exit-code, so this step gates the pipeline on HIGH/CRITICAL findings AND
+        # produces the Security-tab upload — the previous separate table + SARIF
+        # steps re-ran an identical scan (~20-40s) for no additional signal.
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: fs
@@ -220,7 +241,7 @@ jobs:
           format: sarif
           output: trivy-results.sarif
           severity: HIGH,CRITICAL
-          exit-code: "0"
+          exit-code: "1"
 
       - name: Upload Trivy SARIF to GitHub Security
         if: always()
@@ -230,16 +251,19 @@ jobs:
           category: trivy
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # Quality Gate — every check above must pass. Aggregates results so a failure
-  # in any job surfaces as one status.
+  # CI Complete — single required status check covering the whole pipeline: every
+  # job above must pass. Set "CI Complete" as the required check in branch
+  # protection settings. (Formerly a quality-gate → ci-complete chain of two jobs
+  # doing the same aggregation — the second runner allocation added ~20-40s to
+  # time-to-green on every run for no additional signal.)
   # ─────────────────────────────────────────────────────────────────────────────
-  quality-gate:
-    name: Quality Gate
+  ci-complete:
+    name: CI Complete
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    # INVARIANT: every job above (except ci-complete) MUST be listed here. A job
-    # that runs but is omitted from `needs` can fail while this gate stays green —
-    # so when you add a job, add it to this list too.
+    # INVARIANT: every job above MUST be listed here. A job that runs but is
+    # omitted from `needs` can fail while this gate stays green — so when you add
+    # a job, add it to this list too.
     needs:
       - shell
       - secrets
@@ -254,31 +278,18 @@ jobs:
       - name: Check all gates passed
         run: |
           results='${{ toJson(needs.*.result) }}'
-          # `skipped` counts as a failure too: a required job that never ran (a
-          # future `if:` evaluating false, or a needs-skip from an upstream failure)
-          # must NOT pass the gate silently.
-          if echo "$results" | grep -qE '"(failure|cancelled|skipped)"'; then
-            echo "Quality gate failed. Job results: $results"
+          # `skipped` counts as a failure too: a required job that never ran (an
+          # `if:` evaluating false, or a needs-skip from an upstream failure) must
+          # NOT pass the gate silently. EXCEPTION: on the weekly schedule the
+          # deterministic jobs are skipped BY DESIGN (their `github.event_name !=
+          # 'schedule'` gate), so only tolerate `skipped` there.
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            bad='"(failure|cancelled)"'
+          else
+            bad='"(failure|cancelled|skipped)"'
+          fi
+          if echo "$results" | grep -qE "$bad"; then
+            echo "CI gate failed. Job results: $results"
             exit 1
           fi
-          echo "All quality gates passed."
-
-  # ─────────────────────────────────────────────────────────────────────────────
-  # CI Complete — single required status check covering the whole pipeline.
-  # Set "CI Complete" as the required check in branch protection settings.
-  # ─────────────────────────────────────────────────────────────────────────────
-  ci-complete:
-    name: CI Complete
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    needs: [quality-gate]
-    if: always()
-    steps:
-      - name: Check pipeline passed
-        run: |
-          results='${{ toJson(needs.*.result) }}'
-          if echo "$results" | grep -qE '"(failure|cancelled|skipped)"'; then
-            echo "CI pipeline failed. Job results: $results"
-            exit 1
-          fi
-          echo "All CI stages complete."
+          echo "All CI gates passed."

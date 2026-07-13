@@ -6,6 +6,36 @@ All notable changes to LockBox are documented here. The format is based on
 [`VERSION`](VERSION); `sync.sh` stamps it (with each canonical file's SHA-256) into
 every vendored copy, so a baked container self-identifies its egress-lock generation.
 
+## [Unreleased]
+
+### Changed — performance (TODO.md Pass 8 findings, no behavior changes intended)
+- **sync.sh** — each vendored reference copy is generated once up front instead of
+  once (check) or twice (sync) per file *per target*, cutting 18–36 `gen_vendored`/
+  `shasum` runs to 3; this is per-commit latency via the pre-commit `--check`
+  (~1–2s on macOS). Atomic install + write-verify semantics kept.
+- **audit.sh** — the secret scan is a single `git grep --cached -I -nE` over the
+  whole index instead of ~5–6 processes + a temp file per tracked file; same
+  index-not-worktree semantics, `file:line`-only reporting. Also fixed: a bare
+  `id_rsa`/`id_ed25519` at the repo *root* now trips the filename check (the old
+  `*/id_rsa` pattern required a leading directory).
+- **launcher-common.sh** — plugin/statusline staging excludes `.git` at copy time
+  (`tar --exclude .git`) instead of copying multi-MB git dirs and deleting them,
+  on the interactive sandbox-start path.
+- **Dockerfile** — the image-wide setuid/setgid strip moved before the
+  frequently-edited COPY block (a routine allowlist/script edit no longer re-pays
+  a ~10–40s full-filesystem traversal per rebuild); a scoped strip over the
+  COPY'd paths remains the last layer for the same defense-in-depth coverage.
+- **bin/dev** — the proxy-wait folded into the lifecycle `container exec` (one
+  fewer container-CLI round-trip per launch, ~100–300ms on warm reuse); proxy
+  polls are 0.2s instead of 1s here and in `post-create.sh`.
+- **CI** — the `egress-test` image build uses buildx with the GHA layer cache +
+  `SKIP_BUILD=1` (cache-hit builds drop from ~4–8 min to seconds); CodeQL
+  triggers scoped to the workflow/config paths it actually analyzes; the weekly
+  schedule now runs only the rule-DB–dependent scans (Trivy + gitleaks), with the
+  gate tolerating the by-design skips; Trivy scans once (SARIF + gating in one
+  pass); the `quality-gate`/`ci-complete` pair collapsed into a single
+  "CI Complete" job.
+
 ## [0.1.0] — 2026-07-07
 
 First tagged release. Consolidates the 2026-07-07 hardening pass (the research

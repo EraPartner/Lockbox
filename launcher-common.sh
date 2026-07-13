@@ -27,10 +27,19 @@ sandbox_stage_claude_config() {
   dst="$HOME/.claude-sandbox/stage/$profile"
   rm -rf "$dst/dot-claude"; mkdir -p "$dst/dot-claude"
   if [[ -n "$src" && -d "$src" ]]; then
-    for item in settings.json keybindings.json CLAUDE.md agents rules commands skills statusline status-line.sh plugins; do
+    for item in settings.json keybindings.json CLAUDE.md agents rules commands skills status-line.sh; do
       [[ -e "$src/$item" ]] && cp -a "$src/$item" "$dst/dot-claude/" 2>/dev/null || true
     done
-    find "$dst/dot-claude/statusline" "$dst/dot-claude/plugins" -name .git -type d -prune -exec rm -rf {} + 2>/dev/null || true
+    # statusline/ and plugins/ hold git CLONES (plugin/marketplace checkouts) whose
+    # .git dirs can be many MB — exclude them AT COPY TIME rather than cp -a then
+    # delete, which paid full copy I/O for data immediately discarded, on the
+    # interactive sandbox-start path. tar --exclude skips the whole .git subtree at
+    # any depth; works with both bsdtar (macOS) and GNU tar, bash-3.2 safe.
+    for item in statusline plugins; do
+      [[ -e "$src/$item" ]] || continue
+      tar -C "$src" --exclude .git -cf - "$item" 2>/dev/null \
+        | tar -C "$dst/dot-claude" -xf - 2>/dev/null || true
+    done
     # Rewrite host plugin paths to the container path. Escape the interpolated
     # values for BRE + the `#` sed delimiter first: a host $HOME/$src containing a
     # sed metacharacter (or a literal `#`) would otherwise produce a malformed
