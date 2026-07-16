@@ -361,6 +361,77 @@ Checked and found clean (Pass 8c — do not re-investigate):
 - Artifact/upload surface — only the Trivy SARIF upload; no stray retention or oversized uploads.
 - ci.yml `concurrency` (lines 39-41) with cancel-in-progress correctly prevents overlapping-run waste on rapid pushes.
 
+### Pass 9 — Simplification review (2026-07-16)
+
+Dedicated simplification sweep: spots where fewer lines / fewer processes / one tool
+replaces hand-rolled logic, with behavior preserved. Deduped against Passes 1–8 (in
+particular: Pass 8a called `_emit_extras_deduped` "not worth churn" **for performance**
+— the item below re-raises it for line count, with the replacement verified). Every
+file in the repo was read in full; only sandbox/.devcontainer vendored/generated
+copies were skipped (they are outputs of sync.sh, not sources).
+
+Progress tracker (for the next agent if interrupted):
+
+- [x] Pass 9 sweep: all root scripts, sandbox/.devcontainer sources, test/, .github/, Makefile, .githooks — DONE 2026-07-16 (findings below; none implemented yet)
+
+#### Verified, drop-in simplifications
+
+- [x] **[P3]** — DONE 2026-07-16 (verified: repo gates + fixture tests; see commit) `sync.sh:71-81` — `_emit_extras_deduped` (11 lines + one `grep` subprocess per extra host line) is exactly `grep -vxF` with the base host set as the pattern file. One line replaces the whole function at the call site (`sync.sh:104`):
+  `grep -vxF -f <(printf '%s\n' "$base_hosts") -- "$extra" || true`
+  **Verified byte-identical output** on a fixture covering comments, blank lines, duplicated hosts, and a final line with no trailing newline (grep keeps it). Process substitution is bash-3.2 safe. The `|| true` is required: if every extra line is a dup/comment-free match, grep exits 1 and would kill the `set -e` script. *Semantic delta (accept or reject):* a whitespace-padded host line in the extra (e.g. `github.com␠`) is no longer recognized as a dup of the base host — the current function strips whitespace before comparing. Harmless to squid either way (the dup guard exists only to keep host counts honest for human auditors).
+- [x] **[P3]** — DONE 2026-07-16 (verified: repo gates + fixture tests; see commit) `audit.sh:62-76` — the filename check loops over EVERY tracked file in bash and `case`s each; `git ls-files` pathspecs do the filtering natively (default pathspec `*` crosses `/`). **Verified equivalent matching** on a fixture (root `id_rsa`, nested `a/b/id_rsa`, `keys/server.key` all match; `not_id_rsa` does not):
+  ```bash
+  while IFS= read -r -d '' f; do report "private-key file committed: ${f}"; done \
+    < <(git ls-files -z -- 'id_rsa' '*/id_rsa' 'id_ed25519' '*/id_ed25519' '*.key')
+  while IFS= read -r -d '' f; do
+    git show ":$f" 2>/dev/null | grep -q 'PRIVATE KEY' && report "private-key file committed: ${f}"
+  done < <(git ls-files -z -- '*.pem')
+  ```
+  ~15 lines → ~6, and the common case (no key/pem files) is two no-output git commands instead of a bash iteration over the whole index.
+- [x] **[P3]** — DONE 2026-07-16 (verified: repo gates + fixture tests; see commit) `sync.sh:59` — `domains()` uses two chained greps; one pattern does both: `grep -vE '^\s*(#|$)' "$1" 2>/dev/null | sort -u`. One process fewer per call (it is called per target).
+- [x] **[P3]** — DONE 2026-07-16 (verified: repo gates + fixture tests; see commit) `sync.sh:151-155` — the `VENDORED` read loop re-implements the comment/blank filtering `domains()` already provides. `while IFS= read -r _vf; do VENDORED+=("$_vf"); done < <(domains "$HERE/vendored-files.txt")` — 5 lines → 1, bash-3.2 safe. *Delta:* entries come back sorted/deduped; consumers only iterate the set, so order is irrelevant. (Optionally rename `domains` → `effective_lines` since it would now filter filenames too.)
+- [x] **[P3]** — DONE 2026-07-16 (verified: repo gates + fixture tests; see commit) — implemented WITHOUT the whitespace-strip line (`read` already trims; keeping interior whitespace intact preserves the old warn-on-`30 00` behavior). `init-firewall.sh:93-113` — the inbound-port loop can strip whitespace once and merge the two WARN branches (non-numeric / out-of-range are the same operator action):
+  ```bash
+  while read -r port || [[ -n "$port" ]]; do
+    port="${port//[[:space:]]/}"; [[ -z "$port" ]] && continue
+    if [[ "$port" =~ ^[0-9]+$ ]] && (( 10#$port >= 1 && 10#$port <= 65535 )); then
+      iptables -A INPUT -p tcp --dport "$((10#$port))" -j ACCEPT
+    else
+      echo "[firewall] WARN: ignoring invalid inbound port '$port' (need 1..65535)." >&2
+    fi
+  done < "$INBOUND_FILE"
+  ```
+  ~20 lines → ~9, same validation (regex short-circuits before the arithmetic, so non-numeric input never reaches `10#`).
+- [x] **[P3]** — DONE 2026-07-16 (verified: repo gates + fixture tests; see commit) `sandbox/.devcontainer/bin/dev:45-46,208` — `STAGE_NAME` is byte-identical to `NAME` (both `dev-sandbox-$HASH`); and the mount at `:208` re-derives `$HOME/.claude-sandbox/stage/$STAGE_NAME`, which is exactly `$STAGE_DIR`. Delete `STAGE_NAME`, mount `-v "$STAGE_DIR:..."`. Removes a variable and a path-drift hazard (mkdir at `:47` and the `-v` could silently diverge today).
+- [x] **[P3]** — DONE 2026-07-16 (verified: repo gates + fixture tests; see commit) `sandbox/.devcontainer/post-create.sh:10-15` — the proxy-wait loop is redundant since the Pass-8b fold-in: `bin/dev`'s step-6 exec performs the identical wait in the same shell immediately before invoking post-create.sh (bin/dev:239-243), and post-create is baked and has no other caller. Delete the loop (keep a one-line comment saying the launcher provides the barrier).
+
+#### Structural simplifications (small refactors, same behavior)
+
+- [x] **[P3]** — DONE 2026-07-16: helper applied to `gen_vendored` only; `gen_allowlist` keeps its inline temp so the fail-closed host-count check runs on the materialized file before install (routing it through the helper would need a second temp + cat, a net wash with a new stray-temp failure path). `sync.sh:92-120,135-144` — `gen_allowlist` and `gen_vendored` duplicate the atomic-write scaffolding (same-dir `mktemp` → write → `chmod` → `mv`). Factor a `write_atomic <out> <mode>` helper that cats stdin; ~8 lines saved and ONE place owns the atomicity invariant both functions' comments describe.
+- [ ] **[P3]** `launcher-common.sh:104-109` — the `have_claude` scan over `EXEC_ENV` re-derives what the function itself just did two lines earlier (only the keychain branch can have added `CLAUDE_CODE_OAUTH_TOKEN`). Restructure: keychain hit → append + `return 0`; else run the env-var fallback loop. Kills the scan loop and the trailing-`$?` footgun the closing comment works around. *Caveat:* this file is vendored to fleet launchers outside this repo — confirm no launcher pre-populates `EXEC_ENV` with `CLAUDE_CODE_OAUTH_TOKEN` before calling (bin/dev declares `EXEC_ENV=()` immediately before; if any sibling does otherwise, keep the scan).
+
+#### Bigger-hammer options (one line replaces a subsystem — judgment calls, not defects)
+
+- [ ] **[P3 · consider]** `audit.sh:36-50,84-86` — the ~50-line hand-rolled secret-pattern engine is the same job gitleaks already does in CI (`ci.yml` `secrets-scan`, explicitly labeled "backstop"). `gitleaks protect --staged` in `.githooks/pre-commit` replaces the value-pattern half of audit.sh with one line and a far larger, maintained ruleset. *Cost:* a binary dependency on every dev machine (the current gate is deliberately zero-dependency) and slightly different index semantics. The filename checks (`id_rsa`/`.key`/`.pem`) would stay either way. If the dependency is unacceptable, keep audit.sh — this is the documented tradeoff, now written down.
+- [ ] **[P3 · consider]** `.github/workflows/ci.yml:149-175` — the `squid` parse job (26 lines: apt install + stub certs + `squid -k parse`) is functionally subsumed by `egress-test`, which boots the real image — a parse-broken squid.conf means squid never starts and assertion 2 (`squid proxy running`) fails. The job's unique value is only a faster, more precise error message on the failure path. Deleting it saves a runner + ~30-50s of apt per run with no coverage loss; time-to-green is unchanged (egress-test is the long pole). Keep it only if the sharper diagnostics are worth the job.
+- [ ] **[P3 · arguably keep]** `sandbox/.devcontainer/entrypoint.sh:44-59` — the cert-gen/ssl_db recovery block duplicates what the Dockerfile pre-builds, and no current launcher mounts over `/etc/squid/certs` or `/var/lib/squid`, so it is dead code on every boot today (both `if`s always false). 16 lines deletable IF you accept "the image always carries the certs" as an invariant — but as fail-safe redundancy for other runtimes/compose use it is cheap. Flagged for the record; deleting is defensible, keeping is too.
+
+#### Checked and found clean (Pass 9 — do not re-investigate)
+
+- `sandbox/.devcontainer/{init-firewall.sh,squid.conf,launcher-common.sh,allowlist.txt,.dockerignore}` — generated/vendored outputs of sync.sh, not source duplication.
+- `bin/doctor` vs `test/egress-smoke.sh` shared `ok/bad/note` helpers + similar probes — different execution contexts (in-container self-check vs host-side gate booting a fresh container); sharing would couple them for ~10 lines. Leave.
+- Dockerfile Node/Python download blocks — similar shape but RUN layers can't share shell functions without an ADD'd helper script; not worth it.
+- `ci.yml` `bash -n` + shellcheck overlap — different parsers (shellcheck's is not bash); `bash -n` is nearly free. Keep both.
+- `entrypoint.sh` keep-alive loop, `post-start.sh` merge logic, `perms-fix.sh`, `paths.sh`, `Makefile`, `verify-pins` — already minimal.
+- Comment density (~40-50% of the tree) — deliberate per repo convention (audit provenance, WHY-comments); not a simplification target.
+- High-level: no 100-line dead blocks exist. Eight prior review passes already collapsed the big wins (per-file grep loops, duplicated CI scans/gates, per-target regeneration); what remains is the itemized ~60-90 removable lines above plus the three judgment-call subsystem swaps.
+
+#### Pass 9 — suggested working order
+
+1. The seven "verified, drop-in" items — all mechanical, each independently testable; run `make check && make audit` + `bash -n` after each. The two `sync.sh` items and the `audit.sh` item change files gated by `.githooks/pre-commit`, so the gate itself verifies them.
+2. The two structural refactors (atomic-write helper; forward_llm_creds early-return) — the latter only after checking sibling launchers' `EXEC_ENV` usage.
+3. Decide the three bigger-hammer items explicitly (adopt or write down "rejected because …" next to each) so future passes stop re-finding them.
+
 #### Pass 8 — suggested working order
 
 **10 OF 11 FINDINGS IMPLEMENTED** (2026-07-12; see the DONE notes on each item above). The 11th — apt caching in the `squid` job via `awalsh128/cache-apt-pkgs-action` — was reverted 2026-07-13 because that action causes a GitHub Actions `startup_failure` in this repo (see that item above); the `squid` job keeps plain `apt-get`. Verified: `audit.sh` (clean + a planted-secret/index-bypass fixture), `EGRESS_SELF_ONLY=1 sync.sh` + `--check` (byte-identical regeneration), `bash -n` + shellcheck on every touched script, a staged-tree fixture for the launcher tar copy, YAML parse of both workflows. The Dockerfile/CI egress build could not be run in the implementation sandbox (registry egress blocked); CI's `egress-test` job covers it.

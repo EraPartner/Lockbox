@@ -57,23 +57,20 @@ report() { echo "  ✗ $*"; findings=$((findings + 1)); }
 
 echo "== Egress/devcontainer leak audit (git index) =="
 
-# Filename checks — a loop over the tracked-file LIST only (NUL-delimited so paths
-# with spaces are safe); no blob extraction except for *.pem files (typically zero).
+# Private-key FILES by NAME — git ls-files pathspecs do the filtering natively (the
+# default pathspec magic makes `*` cross `/`, and a bare `id_rsa` matches the root
+# copy that `*/id_rsa` alone would miss). Flag regardless of text/binary — a
+# DER-encoded .key is binary and would be skipped by the value scan below. Paths are
+# NUL-delimited so names with spaces are safe.
 while IFS= read -r -d '' f; do
-  # Private-key FILE by NAME — flag regardless of text/binary (a DER-encoded .key
-  # is binary and would be skipped by the text scan below).
-  # (bare names too — git ls-files emits root-level files with NO leading dir,
-  # so `*/id_rsa` alone would miss an id_rsa committed at the repo root)
-  case "$f" in
-    id_rsa|*/id_rsa|id_ed25519|*/id_ed25519|*.key) report "private-key file committed: ${f}" ;;
-  esac
-  # `.pem` is ALSO the extension for PUBLIC certs / chains / CSRs, so gate it on
-  # content instead of the filename to avoid a false hit on a committed public cert.
-  # Staged blob (index version) — see the header for why not the worktree copy.
-  case "$f" in
-    *.pem) git show ":$f" 2>/dev/null | grep -q 'PRIVATE KEY' && report "private-key file committed: ${f}" ;;
-  esac
-done < <(git ls-files -z)
+  report "private-key file committed: ${f}"
+done < <(git ls-files -z -- 'id_rsa' '*/id_rsa' 'id_ed25519' '*/id_ed25519' '*.key')
+# `.pem` is ALSO the extension for PUBLIC certs / chains / CSRs, so gate it on the
+# STAGED blob's content (index version — see the header for why not the worktree copy)
+# to avoid a false hit on a committed public cert.
+while IFS= read -r -d '' f; do
+  git show ":$f" 2>/dev/null | grep -q 'PRIVATE KEY' && report "private-key file committed: ${f}"
+done < <(git ls-files -z -- '*.pem')
 
 # Value-bearing secrets — ONE process over the whole index: `git grep --cached`
 # searches the staged blobs directly (same semantics as `git show :<file>` per

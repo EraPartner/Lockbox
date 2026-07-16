@@ -91,23 +91,20 @@ iptables -A OUTPUT -m owner --uid-owner "$PROXY_USER" -j ACCEPT
 
 # Inbound on forwarded ports, if this project declares any (host browser -> app).
 if [[ -r "$INBOUND_FILE" ]]; then
-  # `|| [[ -n "$port" ]]` so a final line with no trailing newline is not dropped.
+  # `|| [[ -n "$port" ]]` so a final line with no trailing newline is not dropped;
+  # `read` itself trims leading/trailing whitespace, so blank/padded lines need no
+  # extra stripping (and interior whitespace stays put to fail validation below).
+  # Validate as a TCP port in 1..65535: without the range check a value like `0` or
+  # `99999` passes the regex, iptables --dport errors, and (no `set -e`) the port is
+  # silently never opened — the service is unreachable with no diagnostic. The regex
+  # short-circuits the arithmetic, so `10#` (base-10, so a leading zero like `08` is
+  # not misread as octal) only runs on all-digit input.
   while read -r port || [[ -n "$port" ]]; do
-    # Skip blank lines; validate the rest as a TCP port in 1..65535. Without the
-    # range check a value like `0` or `99999` passes `^[0-9]+$`, iptables --dport
-    # errors, and (no `set -e`) the port is silently never opened — the published
-    # service is unreachable with no diagnostic. `10#` forces base-10 so a leading
-    # zero (e.g. `08`) is not misread as octal.
-    [[ -z "${port//[[:space:]]/}" ]] && continue
-    if [[ "$port" =~ ^[0-9]+$ ]]; then
-      p=$((10#$port))
-      if (( p >= 1 && p <= 65535 )); then
-        iptables -A INPUT -p tcp --dport "$p" -j ACCEPT
-      else
-        echo "[firewall] WARN: ignoring out-of-range inbound port '$port' (must be 1..65535)." >&2
-      fi
+    [[ -z "$port" ]] && continue
+    if [[ "$port" =~ ^[0-9]+$ ]] && (( 10#$port >= 1 && 10#$port <= 65535 )); then
+      iptables -A INPUT -p tcp --dport "$((10#$port))" -j ACCEPT
     else
-      echo "[firewall] WARN: ignoring non-numeric inbound port '$port'." >&2
+      echo "[firewall] WARN: ignoring invalid inbound port '$port' (must be 1..65535)." >&2
     fi
   done < "$INBOUND_FILE"
 fi
