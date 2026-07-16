@@ -5,14 +5,9 @@
 
 set -euo pipefail
 
-# Wait for the egress proxy (started by the root entrypoint) before anything that
-# might touch the network.
-echo "[post-create] Waiting for egress proxy on 127.0.0.1:3128..."
-# 0.2s poll: a 1s granularity overshot squid readiness by ~0.5s on average.
-for _ in $(seq 1 150); do
-  (exec 3<>/dev/tcp/127.0.0.1/3128) 2>/dev/null && break
-  sleep 0.2
-done
+# The egress-proxy barrier lives in the launcher (bin/dev step 6): it polls
+# 127.0.0.1:3128 in the SAME shell immediately before invoking this script, so the
+# proxy is already up by the time anything here touches the network.
 
 # --- Seed ~/.claude from the SANITIZED stage the host launcher produced --------
 STAGE=/home/dev/.claude-stage

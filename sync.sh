@@ -54,31 +54,16 @@ done
 # shellcheck source=paths.sh
 source "$HERE/paths.sh"
 
-# Effective (non-comment, non-blank) host set of a file — used by the fail-closed
-# host-count safety check in gen_allowlist and by the "N hosts" sync message.
-domains() { grep -vE '^\s*#' "$1" 2>/dev/null | grep -vE '^\s*$' | sort -u; }
+# Effective (non-comment, non-blank) lines of a file — the host set used by the
+# fail-closed host-count safety check in gen_allowlist and the "N hosts" sync message
+# (also used to read the vendored-files manifest, which isn't hosts).
+domains() { grep -vE '^\s*(#|$)' "$1" 2>/dev/null | sort -u; }
 
 # Minimum sane host count for a generated allowlist. The shared base alone always
 # contributes several hosts, so a generated file at/below this floor means the base
 # was accidentally emptied or corrupted — which fails every container closed but
 # SILENTLY. Refuse to write such a file.
 ALLOWLIST_MIN_HOSTS=1
-
-# Print an allowlist.extra.txt, dropping host lines already present in the base host
-# set ($2, newline-separated); comments and blank lines are kept verbatim. A host in
-# both files would otherwise appear twice in the baked allowlist — harmless to squid,
-# but it inflates the host count and misleads a human auditor. bash-3.2 safe.
-_emit_extras_deduped() {
-  local extra="$1" base_hosts="$2" line host
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    if [[ "$line" =~ ^[[:space:]]*# || -z "${line//[[:space:]]/}" ]]; then
-      printf '%s\n' "$line"; continue
-    fi
-    host="${line//[[:space:]]/}"
-    printf '%s\n' "$base_hosts" | grep -qxF -- "$host" && continue  # in base → drop dup
-    printf '%s\n' "$line"
-  done < "$extra"
-}
 
 gen_allowlist() {
   local dst="$1" project="$2"
@@ -101,7 +86,11 @@ gen_allowlist() {
     echo
     if [[ -f "$extra" ]]; then
       echo "# ==== ${project} project-specific extras ===="
-      _emit_extras_deduped "$extra" "$base_hosts"
+      # Drop extra hosts already in the base: a dup would appear twice in the baked
+      # allowlist, inflating the host count shown to a human auditor. Comments/blanks
+      # are kept verbatim, and a whitespace-padded dup line is kept (accepted delta).
+      # `|| true`: grep exits 1 when every extra line is filtered — must not abort set -e.
+      grep -vxF -f <(printf '%s\n' "$base_hosts") -- "$extra" || true
     else
       echo "# (no ${project}/allowlist.extra.txt — base only)"
     fi
@@ -120,28 +109,34 @@ gen_allowlist() {
   mv "$tmp" "$out"
 }
 
+# Atomic write: read stdin into a same-dir temp, set mode, mv into place — an
+# interrupt or disk-full never leaves a truncated egress file.
+write_atomic() {
+  local out="$1" mode="$2" tmp
+  tmp="$(mktemp "$(dirname "$out")/.tmp.XXXXXX")" || { echo "sync: ERROR mktemp failed for $out" >&2; exit 1; }
+  cat > "$tmp"
+  chmod "$mode" "$tmp"
+  mv "$tmp" "$out"
+}
+
 # Write a vendored copy of a canonical file: its EXACT content, then a provenance
 # stamp (LockBox version + the canonical file's SHA-256). The stamp lets a baked
 # container self-identify its egress-lock generation, and is DETERMINISTIC (version +
 # content hash — no timestamp, no commit SHA) so `--check` can regenerate and verify
 # it. This is why the vendoring invariant is "vendored == canonical content + this
 # exact stamp" (regenerate-and-cmp, like the allowlist) rather than byte-identical.
-# Written atomically via a same-dir temp. $3 = octal mode (default 0644).
+# Written atomically via write_atomic. $3 = octal mode (default 0644).
 gen_vendored() {
   local canonical="$1" out="$2" mode="${3:-0644}"
-  local outdir tmp hash
-  outdir="$(dirname "$out")"
+  local hash
   hash="$(sha256_of "$canonical")"
-  tmp="$(mktemp "$outdir/.vendored.XXXXXX")" || { echo "sync: ERROR mktemp failed in $outdir" >&2; exit 1; }
   {
     cat "$canonical"
     echo
     echo "# ─── vendored by LockBox v${LOCKBOX_VERSION} · canonical sha256:${hash} ───"
     echo "# Generated from the canonical source by LockBox/sync.sh — DO NOT EDIT HERE."
     echo "# Edit LockBox/$(basename "$canonical") and re-run ./sync.sh."
-  } > "$tmp"
-  chmod "$mode" "$tmp"
-  mv "$tmp" "$out"
+  } | write_atomic "$out" "$mode"
 }
 
 # Files vendored (canonical name -> per-project name; same here). Read from the shared
@@ -149,10 +144,7 @@ gen_vendored() {
 # the same vendored-files.txt. Each is written as canonical content + a provenance
 # stamp (see gen_vendored), NOT byte-identical.
 VENDORED=()
-while IFS= read -r _vf || [[ -n "$_vf" ]]; do
-  if [[ "$_vf" =~ ^[[:space:]]*# ]] || [[ -z "${_vf//[[:space:]]/}" ]]; then continue; fi
-  VENDORED+=("$_vf")
-done < "$HERE/vendored-files.txt"
+while IFS= read -r _vf; do VENDORED+=("$_vf"); done < <(domains "$HERE/vendored-files.txt")
 (( ${#VENDORED[@]} > 0 )) || { echo "sync: ERROR no vendored files listed in $HERE/vendored-files.txt" >&2; exit 1; }
 
 # A vendored reference copy is TARGET-INDEPENDENT (canonical content + version +

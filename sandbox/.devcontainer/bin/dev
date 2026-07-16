@@ -42,8 +42,7 @@ container system status >/dev/null 2>&1 || { echo "dev: container system not sta
 HASH="$(printf '%s' "$TARGET" | shasum 2>/dev/null | cut -c1-12 || echo target)"
 NAME="dev-sandbox-$HASH"
 IMAGE="dev-sandbox:latest"
-STAGE_NAME="dev-sandbox-$HASH"
-STAGE_DIR="$HOME/.claude-sandbox/stage/$STAGE_NAME"
+STAGE_DIR="$HOME/.claude-sandbox/stage/$NAME"
 mkdir -p "$STAGE_DIR"
 
 # --- 1) Effective egress allowlist = baked base + this target's overlay -------
@@ -115,7 +114,7 @@ NEW_INBOUND="$(cat "$INBOUND_OUT" 2>/dev/null || true)"
 # --- 3) Stage a sanitized ~/.claude for the RO bind mount --------------------
 # shellcheck source=../launcher-common.sh
 source "$DC/launcher-common.sh"
-sandbox_stage_claude_config "$STAGE_NAME"
+sandbox_stage_claude_config "$NAME"
 
 # --- 3b) Lock host-executed git paths READ-ONLY (.git + relocated hooks) -------
 # Bind .git — and the effective core.hooksPath dir when it relocates hooks OUTSIDE
@@ -205,7 +204,7 @@ else
     -v "dev-sandbox-claude-$HASH:/home/dev/.claude" \
     -v "dev-sandbox-config-$HASH:/home/dev/.config" \
     -v "dev-sandbox-local-$HASH:/home/dev/.local" \
-    -v "$HOME/.claude-sandbox/stage/$STAGE_NAME:/home/dev/.claude-stage:ro" \
+    -v "$STAGE_DIR:/home/dev/.claude-stage:ro" \
     -v "$HOME/.claude/hooks/guard.mjs:/usr/local/share/claude-guard/guard.mjs:ro" \
     -v "$HOME/.claude/hooks/managed-settings.json:/etc/claude-code/managed-settings.json:ro" \
     -v "$HOME/.gitconfig:/home/dev/.gitconfig-host:ro" \

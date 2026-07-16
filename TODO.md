@@ -376,10 +376,10 @@ Progress tracker (for the next agent if interrupted):
 
 #### Verified, drop-in simplifications
 
-- [ ] **[P3]** `sync.sh:71-81` — `_emit_extras_deduped` (11 lines + one `grep` subprocess per extra host line) is exactly `grep -vxF` with the base host set as the pattern file. One line replaces the whole function at the call site (`sync.sh:104`):
+- [x] **[P3]** — DONE 2026-07-16 (verified: repo gates + fixture tests; see commit) `sync.sh:71-81` — `_emit_extras_deduped` (11 lines + one `grep` subprocess per extra host line) is exactly `grep -vxF` with the base host set as the pattern file. One line replaces the whole function at the call site (`sync.sh:104`):
   `grep -vxF -f <(printf '%s\n' "$base_hosts") -- "$extra" || true`
   **Verified byte-identical output** on a fixture covering comments, blank lines, duplicated hosts, and a final line with no trailing newline (grep keeps it). Process substitution is bash-3.2 safe. The `|| true` is required: if every extra line is a dup/comment-free match, grep exits 1 and would kill the `set -e` script. *Semantic delta (accept or reject):* a whitespace-padded host line in the extra (e.g. `github.com␠`) is no longer recognized as a dup of the base host — the current function strips whitespace before comparing. Harmless to squid either way (the dup guard exists only to keep host counts honest for human auditors).
-- [ ] **[P3]** `audit.sh:62-76` — the filename check loops over EVERY tracked file in bash and `case`s each; `git ls-files` pathspecs do the filtering natively (default pathspec `*` crosses `/`). **Verified equivalent matching** on a fixture (root `id_rsa`, nested `a/b/id_rsa`, `keys/server.key` all match; `not_id_rsa` does not):
+- [x] **[P3]** — DONE 2026-07-16 (verified: repo gates + fixture tests; see commit) `audit.sh:62-76` — the filename check loops over EVERY tracked file in bash and `case`s each; `git ls-files` pathspecs do the filtering natively (default pathspec `*` crosses `/`). **Verified equivalent matching** on a fixture (root `id_rsa`, nested `a/b/id_rsa`, `keys/server.key` all match; `not_id_rsa` does not):
   ```bash
   while IFS= read -r -d '' f; do report "private-key file committed: ${f}"; done \
     < <(git ls-files -z -- 'id_rsa' '*/id_rsa' 'id_ed25519' '*/id_ed25519' '*.key')
@@ -388,9 +388,9 @@ Progress tracker (for the next agent if interrupted):
   done < <(git ls-files -z -- '*.pem')
   ```
   ~15 lines → ~6, and the common case (no key/pem files) is two no-output git commands instead of a bash iteration over the whole index.
-- [ ] **[P3]** `sync.sh:59` — `domains()` uses two chained greps; one pattern does both: `grep -vE '^\s*(#|$)' "$1" 2>/dev/null | sort -u`. One process fewer per call (it is called per target).
-- [ ] **[P3]** `sync.sh:151-155` — the `VENDORED` read loop re-implements the comment/blank filtering `domains()` already provides. `while IFS= read -r _vf; do VENDORED+=("$_vf"); done < <(domains "$HERE/vendored-files.txt")` — 5 lines → 1, bash-3.2 safe. *Delta:* entries come back sorted/deduped; consumers only iterate the set, so order is irrelevant. (Optionally rename `domains` → `effective_lines` since it would now filter filenames too.)
-- [ ] **[P3]** `init-firewall.sh:93-113` — the inbound-port loop can strip whitespace once and merge the two WARN branches (non-numeric / out-of-range are the same operator action):
+- [x] **[P3]** — DONE 2026-07-16 (verified: repo gates + fixture tests; see commit) `sync.sh:59` — `domains()` uses two chained greps; one pattern does both: `grep -vE '^\s*(#|$)' "$1" 2>/dev/null | sort -u`. One process fewer per call (it is called per target).
+- [x] **[P3]** — DONE 2026-07-16 (verified: repo gates + fixture tests; see commit) `sync.sh:151-155` — the `VENDORED` read loop re-implements the comment/blank filtering `domains()` already provides. `while IFS= read -r _vf; do VENDORED+=("$_vf"); done < <(domains "$HERE/vendored-files.txt")` — 5 lines → 1, bash-3.2 safe. *Delta:* entries come back sorted/deduped; consumers only iterate the set, so order is irrelevant. (Optionally rename `domains` → `effective_lines` since it would now filter filenames too.)
+- [x] **[P3]** — DONE 2026-07-16 (verified: repo gates + fixture tests; see commit) — implemented WITHOUT the whitespace-strip line (`read` already trims; keeping interior whitespace intact preserves the old warn-on-`30 00` behavior). `init-firewall.sh:93-113` — the inbound-port loop can strip whitespace once and merge the two WARN branches (non-numeric / out-of-range are the same operator action):
   ```bash
   while read -r port || [[ -n "$port" ]]; do
     port="${port//[[:space:]]/}"; [[ -z "$port" ]] && continue
@@ -402,12 +402,12 @@ Progress tracker (for the next agent if interrupted):
   done < "$INBOUND_FILE"
   ```
   ~20 lines → ~9, same validation (regex short-circuits before the arithmetic, so non-numeric input never reaches `10#`).
-- [ ] **[P3]** `sandbox/.devcontainer/bin/dev:45-46,208` — `STAGE_NAME` is byte-identical to `NAME` (both `dev-sandbox-$HASH`); and the mount at `:208` re-derives `$HOME/.claude-sandbox/stage/$STAGE_NAME`, which is exactly `$STAGE_DIR`. Delete `STAGE_NAME`, mount `-v "$STAGE_DIR:..."`. Removes a variable and a path-drift hazard (mkdir at `:47` and the `-v` could silently diverge today).
-- [ ] **[P3]** `sandbox/.devcontainer/post-create.sh:10-15` — the proxy-wait loop is redundant since the Pass-8b fold-in: `bin/dev`'s step-6 exec performs the identical wait in the same shell immediately before invoking post-create.sh (bin/dev:239-243), and post-create is baked and has no other caller. Delete the loop (keep a one-line comment saying the launcher provides the barrier).
+- [x] **[P3]** — DONE 2026-07-16 (verified: repo gates + fixture tests; see commit) `sandbox/.devcontainer/bin/dev:45-46,208` — `STAGE_NAME` is byte-identical to `NAME` (both `dev-sandbox-$HASH`); and the mount at `:208` re-derives `$HOME/.claude-sandbox/stage/$STAGE_NAME`, which is exactly `$STAGE_DIR`. Delete `STAGE_NAME`, mount `-v "$STAGE_DIR:..."`. Removes a variable and a path-drift hazard (mkdir at `:47` and the `-v` could silently diverge today).
+- [x] **[P3]** — DONE 2026-07-16 (verified: repo gates + fixture tests; see commit) `sandbox/.devcontainer/post-create.sh:10-15` — the proxy-wait loop is redundant since the Pass-8b fold-in: `bin/dev`'s step-6 exec performs the identical wait in the same shell immediately before invoking post-create.sh (bin/dev:239-243), and post-create is baked and has no other caller. Delete the loop (keep a one-line comment saying the launcher provides the barrier).
 
 #### Structural simplifications (small refactors, same behavior)
 
-- [ ] **[P3]** `sync.sh:92-120,135-144` — `gen_allowlist` and `gen_vendored` duplicate the atomic-write scaffolding (same-dir `mktemp` → write → `chmod` → `mv`). Factor a `write_atomic <out> <mode>` helper that cats stdin; ~8 lines saved and ONE place owns the atomicity invariant both functions' comments describe.
+- [x] **[P3]** — DONE 2026-07-16: helper applied to `gen_vendored` only; `gen_allowlist` keeps its inline temp so the fail-closed host-count check runs on the materialized file before install (routing it through the helper would need a second temp + cat, a net wash with a new stray-temp failure path). `sync.sh:92-120,135-144` — `gen_allowlist` and `gen_vendored` duplicate the atomic-write scaffolding (same-dir `mktemp` → write → `chmod` → `mv`). Factor a `write_atomic <out> <mode>` helper that cats stdin; ~8 lines saved and ONE place owns the atomicity invariant both functions' comments describe.
 - [ ] **[P3]** `launcher-common.sh:104-109` — the `have_claude` scan over `EXEC_ENV` re-derives what the function itself just did two lines earlier (only the keychain branch can have added `CLAUDE_CODE_OAUTH_TOKEN`). Restructure: keychain hit → append + `return 0`; else run the env-var fallback loop. Kills the scan loop and the trailing-`$?` footgun the closing comment works around. *Caveat:* this file is vendored to fleet launchers outside this repo — confirm no launcher pre-populates `EXEC_ENV` with `CLAUDE_CODE_OAUTH_TOKEN` before calling (bin/dev declares `EXEC_ENV=()` immediately before; if any sibling does otherwise, keep the scan).
 
 #### Bigger-hammer options (one line replaces a subsystem — judgment calls, not defects)
