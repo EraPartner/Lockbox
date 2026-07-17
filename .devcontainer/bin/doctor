@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# LockBox devcontainer readiness check. Run INSIDE the container:
+#   bash .devcontainer/bin/doctor
+# (or:  container exec lockbox-dev bash /workspaces/LockBox/.devcontainer/bin/doctor)
+#
+# The root entrypoint is intentionally best-effort/non-fatal, so failures are
+# silent. This gives a one-shot health signal for the things that matter.
+
+pass() { printf '  \033[32mok\033[0m   %s\n' "$1"; }
+fail() { printf '  \033[31mFAIL\033[0m %s\n' "$1"; FAILED=1; }
+FAILED=0
+
+echo "LockBox devcontainer doctor"
+echo "----------------------------"
+
+# Sandbox integrity: .devcontainer holds the HOST-side launcher (bin/claude) and
+# the sandbox definition (Dockerfile, launcher run args). If writable from inside,
+# a compromised agent can rewrite them and escape to the host on the next launch.
+# The launcher mounts it read-only, but that only applies on container CREATE — a
+# stale container booted before the change leaves the door open. Prove it's live
+# by trying to write, not by trusting the config.
+DC_DIR="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd -P || echo /workspaces/LockBox/.devcontainer)"
+_probe="$DC_DIR/.doctor-write-probe.$$"
+if ( : > "$_probe" ) 2>/dev/null; then
+  rm -f "$_probe" 2>/dev/null || true
+  fail ".devcontainer WRITABLE from inside — host launcher/run args can be tampered; REBUILD: LOCKBOX_REBUILD=1 lockbox-claude"
+else
+  pass ".devcontainer is read-only (anti-tamper overlay active)"
+fi
+
+# Egress proxy listening?
+if (exec 3<>/dev/tcp/127.0.0.1/3128) 2>/dev/null; then pass "egress proxy listening on 127.0.0.1:3128"
+else fail "egress proxy NOT listening on 127.0.0.1:3128 (check 'container logs <id>')"; fi
+
+# Allowed egress through the proxy?
+code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 12 https://api.anthropic.com/ 2>/dev/null || echo 000)
+[[ "$code" != 000 ]] && pass "egress via proxy reaches api.anthropic.com (HTTP $code)" || fail "cannot reach api.anthropic.com through the proxy"
+
+# Direct egress should be blocked.
+if curl -sS -o /dev/null --max-time 6 --noproxy '*' https://api.anthropic.com/ 2>/dev/null; then
+  fail "DIRECT egress (bypassing proxy) succeeded — firewall not enforcing!"
+else pass "direct egress (bypassing proxy) is blocked"; fi
+
+# A non-allowlisted host THROUGH the proxy must be denied (catches an allowlist
+# regression — e.g. a squid misconfig that allowed everything).
+if curl -sS -o /dev/null --max-time 10 https://example.com/ 2>/dev/null; then
+  fail "non-allowlisted host (example.com) was ALLOWED through the proxy — allowlist regression!"
+else pass "non-allowlisted host denied by the proxy allowlist"; fi
+
+# Toolchain.
+command -v node >/dev/null && pass "node $(node -v)" || fail "node missing"
+command -v npm  >/dev/null && pass "npm $(npm -v)"  || fail "npm missing"
+command -v claude >/dev/null && pass "claude $(claude --version 2>/dev/null | head -1)" || fail "claude missing"
+command -v safe-chain >/dev/null && pass "safe-chain present (package installs are screened)" \
+  || fail "safe-chain MISSING — npm/bun/pip installs are NOT supply-chain screened"
+# LockBox-specific toolchain (shell infra).
+command -v shellcheck >/dev/null && pass "shellcheck $(shellcheck --version 2>/dev/null | awk '/version:/{print $2}')" || fail "shellcheck missing"
+command -v make >/dev/null && pass "make present" || fail "make missing"
+
+# Claude auth token forwarded?
+[[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]] && pass "CLAUDE_CODE_OAUTH_TOKEN present" \
+  || echo "  note CLAUDE_CODE_OAUTH_TOKEN not set in this shell (the wrapper forwards it to claude only)"
+
+# gh token forwarded?
+[[ -z "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ]] \
+  && pass "no git push token in env (commits happen on the host — expected)" \
+  || fail "GH_TOKEN/GITHUB_TOKEN present — a container must NOT hold a git push credential"
+
+# Egress audit log readable by dev?
+if [[ -r /var/log/squid/access.log ]]; then pass "egress audit log readable: /var/log/squid/access.log"
+else echo "  note /var/log/squid/access.log not yet created or unreadable (appears after first request)"; fi
+
+# Claude config seeded (no onboarding)?
+[[ -f /home/dev/.claude/settings.json ]] && pass "~/.claude seeded (settings.json present)" \
+  || fail "~/.claude not seeded — claude will show first-run onboarding"
+
+# Host disk: the workspace is a bind mount onto the host filesystem, so a
+# runaway write here fills the HOST disk (no quota). Warn when free space is low.
+avail_kb=$(df -P /workspaces/LockBox 2>/dev/null | awk 'NR==2{print $4}')
+if [[ -n "$avail_kb" ]]; then
+  avail_gb=$(( avail_kb / 1024 / 1024 ))
+  (( avail_gb < 5 )) && fail "low free space on the workspace/host filesystem (${avail_gb} GB) — risk of filling the host disk" \
+                     || pass "workspace/host free space OK (${avail_gb} GB)"
+fi
+
+echo "----------------------------"
+(( FAILED )) && { echo "Some checks FAILED."; exit 1; } || { echo "All checks passed."; exit 0; }

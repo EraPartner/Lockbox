@@ -28,6 +28,9 @@ EGRESS_DEVCONTAINERS=(
   "$CODE_ROOT/Watchman/.devcontainer"
   "$CODE_ROOT/Napoleon-relay/.devcontainer"
   "$CODE_ROOT/git-agent/.devcontainer"
+  "$CODE_ROOT/dotfiles/.devcontainer"
+  "$CODE_ROOT/VaultLens/.devcontainer"
+  "$EGRESS_REPO/.devcontainer"
   "$EGRESS_REPO/sandbox/.devcontainer"
   "$BRAIN_DC"
 )

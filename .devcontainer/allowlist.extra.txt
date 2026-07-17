@@ -1,0 +1,29 @@
+# LockBox project-specific egress extras (merged onto base-allowlist.txt by
+# LockBox/sync.sh into the baked allowlist.txt). The base already grants the
+# Anthropic API + GitHub (git over HTTPS + api.github.com), which covers editing
+# this repo and gh. LockBox is bash/shell infra — its sync.sh/audit.sh run purely
+# locally — so the only extra egress is what Claude Code's own tooling needs.
+
+# Anthropic / Claude Code (auth, auto-updater, docs beyond the base API).
+platform.claude.com
+claude.ai
+code.claude.com
+docs.claude.com
+downloads.claude.ai
+
+# npm — safe-chain install + any ad-hoc `npm i`.
+registry.npmjs.org
+
+# safe-chain malware list (supply-chain screening of npm/pip installs).
+malware-list.aikido.dev
+
+# Node headers (node-gyp) for the odd native module at runtime.
+nodejs.org
+
+# PyPI — the security-guidance plugin's deep reviewer pip-installs claude-agent-sdk
+# on first start; without this it degrades gracefully but the layer is skipped.
+pypi.org
+files.pythonhosted.org
+
+# Plugins: context7 MCP (npx @upstash/context7-mcp → context7 docs API).
+context7.com
