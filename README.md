@@ -86,6 +86,45 @@ GENERATED — do not hand-edit). To change egress: edit `base-allowlist.txt` (al
 containers) or a project's `allowlist.extra.txt` (one container), then `./sync.sh`
 and rebuild. squid ignores `#`-comment and blank lines, so comments are safe.
 
+## Toolchain pins (staying current, safely)
+
+The images bake a Claude CLI, Node, Python and safe-chain. **They never fetch
+"latest" at runtime**, and that is deliberate: a runtime `npm i -g` would make the
+npm registry a trusted input *inside* the security boundary with no human in the
+loop, and it would defeat `bin/verify-pins` (which fails closed on SHA-256 drift
+and cannot pin a hash that is unknown before the build). Instead "latest" happens
+at **build** time, behind review:
+
+| | |
+|---|---|
+| `tool-pins.env` | single source of truth for every baked tool version + hash |
+| `make pins-report` | pinned vs cooldown-eligible vs upstream latest — *"are we stale?"* |
+| `make pins` | resolve, re-hash and rewrite the pins (`./bump-pins.sh` alone = dry run) |
+| `make pins-check` | offline gate: `tool-pins.env` must match every Dockerfile `ARG` |
+
+The Dockerfiles carry the pins as `ARG` defaults so a plain `container build` needs
+no extra flags; `pins-check` (run by `.githooks/pre-commit`, `make check`, and CI)
+fails if the two ever diverge. `.github/workflows/bump-pins.yml` runs the resolver
+weekly and opens a PR — never auto-merged, because the version + hash diff *is* the
+reviewed anchor for what the image may execute.
+
+Two things worth knowing:
+
+- **Cooldown.** `COOLDOWN_DAYS` (default 7) refuses any release younger than that.
+  Recent npm compromises were caught and unpublished within ~24h, so the hold costs
+  a few days of features and removes nearly all zero-day-publish exposure.
+- **The claude pin is a *binary* hash, not just a version.** The
+  `@anthropic-ai/claude-code` package is a ~20 KB wrapper; the real executable
+  ships in a per-arch optionalDependency that its postinstall copies into place. So
+  the build asserts the SHA-256 of the installed native binary. A hash change at an
+  *unchanged* version means the registry served different bytes — investigate, do
+  not merge.
+
+Node stays within its pinned major line; crossing a major is a platform decision
+and is reported but never applied automatically. `gh` and the apt packages stay
+unpinned on purpose (mirrors drop old versions, which would break cache-miss
+rebuilds); `verify-pins` covers them at launch instead.
+
 ## Workflow
 
 The fleet runs on Apple's `container` (not Docker/Compose). Each project's

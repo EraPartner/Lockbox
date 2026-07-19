@@ -22,7 +22,11 @@ RT="${RUNTIME:-container}"
 IMAGE="${IMAGE:-dev-sandbox:egress-test}"
 NAME="egress-smoke-$$"
 HERE="$(cd "$(dirname "$0")" && pwd -P)"
-DC="$HERE/../sandbox/.devcontainer"
+# Normalise: apple/container rejects a build context path containing ".." with
+#   Error: <repo>/sandbox is not a child of <repo>/test/../sandbox/.devcontainer
+# and never starts the build. docker tolerates it, so this only bit the default
+# RUNTIME=container path.
+DC="$(cd "$HERE/../sandbox/.devcontainer" && pwd -P)"
 PROXY="http://127.0.0.1:3128"
 
 command -v "$RT" >/dev/null 2>&1 || { echo "egress-test: runtime '$RT' not found on PATH" >&2; exit 2; }

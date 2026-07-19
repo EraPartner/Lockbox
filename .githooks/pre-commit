@@ -9,8 +9,12 @@
 # 2) Drift check: every vendored copy + generated allowlist is in sync with the
 #    canonical sources (catches a hand-edited init-firewall.sh/squid.conf/allowlist
 #    or a stale baked allowlist before it is committed).
+# 3) Pin check: tool-pins.env matches every Dockerfile's ARG defaults (catches a
+#    hand-bumped claude/node/python version that would silently diverge the two
+#    images — the toolchain equivalent of the vendoring drift in (2)). Offline.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd -P)"
 
 "$HERE/audit.sh"
 "$HERE/sync.sh" --check
+"$HERE/bump-pins.sh" --check

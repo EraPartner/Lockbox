@@ -109,8 +109,47 @@ RUN printf 'export PATH="/usr/local/share/npm-global/bin:/opt/python/bin:/usr/lo
 # --- Claude Code CLI ----------------------------------------------------------
 # Installed as root into the root-owned global prefix and deliberately NOT chown'd
 # to dev — so the pinned claude/npm cannot be replaced by the dev user.
-RUN npm install -g @anthropic-ai/claude-code@2.1.173 \
-  && claude --version
+# PINNED from ../../tool-pins.env (rationale: README "Toolchain pins"). Never
+# hand-edit — ./bump-pins.sh --write rewrites this and tool-pins.env together,
+# and --check (pre-commit + CI) fails on divergence. The npm package is a ~20 KB
+# wrapper; the real binary is a per-arch optional dep that postinstall copies to
+# bin/claude.exe. We hash the PAYLOAD, restore it if postinstall was blocked
+# (npm >= 12 leaves a 500-byte stub), then re-check PATH. Fail-closed.
+ARG CLAUDE_CODE_VERSION=2.1.207
+ARG CLAUDE_CODE_SHA256_ARM64=8bc14a284065383460f37981d724b8f7aa7ca93c9849d2fe367e08f03383f454
+ARG CLAUDE_CODE_SHA256_AMD64=85e7e988a392d859f90802ca21fb26e89d3c9ab527f5ed0b08df3955e34d5c83
+RUN set -eux; \
+    npm install -g --no-fund --no-audit "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"; \
+    case "$(dpkg --print-architecture)" in arm64) na=linux-arm64; want="${CLAUDE_CODE_SHA256_ARM64}" ;; amd64) na=linux-x64; want="${CLAUDE_CODE_SHA256_AMD64}" ;; *) exit 1 ;; esac; \
+    root="$(npm root -g)/@anthropic-ai/claude-code"; \
+    payload="$root/node_modules/@anthropic-ai/claude-code-${na}/claude"; \
+    test -f "$payload" || exit 1; \
+    got="$(sha256sum "$payload" | awk '{print $1}')"; \
+    echo "claude pin: want=$want got=$got"; \
+    test "$want" = "$got" || echo "FATAL: claude binary != reviewed pin; re-run ./bump-pins.sh --write" >&2; \
+    test "$want" = "$got" || exit 1; \
+    stub="$(sha256sum "$root/bin/claude.exe" | awk '{print $1}')"; \
+    test "$stub" = "$want" || cd "$root"; \
+    test "$stub" = "$want" || node install.cjs; \
+    cd /; \
+    claudebin="$(command -v claude)"; \
+    run="$(readlink -f "$claudebin")"; \
+    got2="$(sha256sum "$run" | awk '{print $1}')"; \
+    test "$got2" = "$want" || exit 1; \
+    claude --version
+
+# --- safe-chain (supply-chain screening for ad-hoc installs) ------------------
+# BAKED, not installed at runtime: post-create.sh used to `npm i -g` this unpinned
+# inside the security boundary, BEFORE it could screen anything. LIMIT: its 8
+# transitive deps are not hash-pinned — a reviewed version pin, not a closure pin.
+ARG SAFE_CHAIN_VERSION=1.5.12
+RUN npm install -g --no-fund --no-audit "@aikidosec/safe-chain@${SAFE_CHAIN_VERSION}" \
+  && command -v safe-chain \
+  && safe-chain --version 2>/dev/null || true
+
+# The root-owned prefix already stops Claude Code's self-updater replacing the
+# pinned binary; this stops it retrying each session. Upgrades here are rebuilds.
+ENV DISABLE_AUTOUPDATER=1
 
 # Runtime global installs (safe-chain in post-create) go to a SEPARATE dev-owned
 # prefix, so they never need write access to the pinned root prefix above.
@@ -148,7 +187,7 @@ RUN set -eux; \
     pinfile=/usr/local/share/dev-sandbox/binary-pins.txt; \
     mkdir -p /usr/local/share/dev-sandbox; \
     : > "$pinfile"; \
-    for b in node npm claude gh git python3; do \
+    for b in node npm claude gh git python3 safe-chain; do \
       p="$(command -v "$b")"; \
       h="$(sha256sum "$p" | awk '{print $1}')"; \
       printf '%s\t%s\t%s\n' "$b" "$p" "$h" >> "$pinfile"; \

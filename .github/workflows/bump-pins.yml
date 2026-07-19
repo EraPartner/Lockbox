@@ -1,0 +1,105 @@
+name: Bump toolchain pins
+
+# Keeps the sandbox toolchain current WITHOUT letting any container fetch "latest"
+# at runtime. Runtime auto-update is not an option here: it would make the npm
+# registry a trusted input inside the security boundary with no human in the loop,
+# and it would defeat bin/verify-pins (which fails closed on SHA-256 drift and
+# cannot pin a hash that is unknown before the build). So "latest" happens HERE,
+# weekly, as a reviewed pull request:
+#
+#   resolve newest COOLDOWN-eligible version  ->  download + hash the real
+#   artifacts  ->  rewrite tool-pins.env + both Dockerfiles  ->  open a PR  ->
+#   full CI (including the egress-enforcement boot test) gates the merge.
+#
+# Dependabot cannot do this job: it tracks only the GitHub Actions and the
+# Docker base image (see dependabot.yml). The Claude CLI is an `npm install -g`
+# inside a RUN layer and Node/Python are curl'd tarballs — none of which
+# Dependabot parses.
+#
+# The PR is NEVER auto-merged. A human reviews the version + hash diff, which is
+# the entire point: the hashes in the diff are the reviewed anchor for what the
+# image is allowed to execute.
+
+on:
+  schedule:
+    # Weekly, Tuesday 05:00 UTC — staggered off CI (Mon 04:00) and CodeQL (03:00).
+    - cron: "0 5 * * 2"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: bump-pins
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    name: Resolve pins and open PR
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write        # push the bump branch
+      pull-requests: write   # open the PR
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v4
+
+      # No third-party action is used to open the PR. `gh` ships on the runner,
+      # so this adds zero new supply-chain trust to a repo whose whole purpose is
+      # minimizing it.
+      - name: Resolve newest cooldown-eligible pins
+        id: bump
+        run: |
+          set -euo pipefail
+          before="$(sha256sum tool-pins.env | cut -d' ' -f1)"
+          ./bump-pins.sh --write | tee /tmp/bump.log
+          after="$(sha256sum tool-pins.env | cut -d' ' -f1)"
+          if [ "$before" = "$after" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Pins already current — nothing to do."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Belt and braces: --write already re-runs --check, but assert here too so a
+      # malformed rewrite can never reach a PR.
+      - name: Verify pins are internally consistent
+        if: steps.bump.outputs.changed == 'true'
+        run: ./bump-pins.sh --check
+
+      - name: Open pull request
+        if: steps.bump.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          branch="bump-pins/$(date -u +%Y-%m-%d)"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add tool-pins.env .devcontainer/Dockerfile sandbox/.devcontainer/Dockerfile
+          git commit -m "build: bump sandbox toolchain pins to newest cooldown-eligible versions"
+          git push --force-with-lease origin "$branch"
+
+          # Heredoc body: the resolver log already lists old -> new plus the new
+          # binary hashes, which is exactly what a reviewer needs to see.
+          {
+            echo "Automated weekly toolchain pin bump."
+            echo
+            echo '```'
+            cat /tmp/bump.log
+            echo '```'
+            echo
+            echo "### Review checklist"
+            echo "- [ ] Version jumps look plausible (no surprise major bump)."
+            echo "- [ ] The claude binary SHA-256s changed **because the version changed** — a hash change at an unchanged version means the registry served different bytes and must be investigated, not merged."
+            echo "- [ ] CI is green, including the egress-enforcement boot test."
+            echo
+            echo "Cooldown is enforced by \`tool-pins.env\` (\`COOLDOWN_DAYS\`): releases younger than that are deliberately not selected."
+          } > /tmp/pr-body.md
+
+          gh pr create \
+            --title "build: bump sandbox toolchain pins" \
+            --body-file /tmp/pr-body.md \
+            --base main \
+            --head "$branch" \
+            --label dependencies

@@ -8,6 +8,80 @@ every vendored copy, so a baked container self-identifies its egress-lock genera
 
 ## [Unreleased]
 
+### Added — toolchain pinning + automated bumps
+- **`tool-pins.env`** — single source of truth for the baked toolchain
+  (claude-code, safe-chain, Node, Python) across **all nine managed devcontainers**,
+  in seven repos. Targets come from `paths.sh`, the same single source `sync.sh` and
+  `audit.sh` use, so onboarding a container stays a one-line edit in one file.
+  Previously `NODE_VERSION`, `PY_VERSION`, `PY_RELEASE` and the claude version were
+  hand-duplicated across all nine Dockerfiles with nothing asserting they matched —
+  the toolchain equivalent of the drift `paths.sh` exists to prevent. They agreed on
+  Node/Python by luck; the claude pin had already split (2.1.173 in seven of nine,
+  2.1.207 in two). All nine now build the same reviewed, hash-verified binary.
+  `SAFE_CHAIN_VERSION` is checked only where the ARG exists — the other seven still
+  install safe-chain unpinned at runtime (follow-up: baking it there also means
+  editing each repo's `post-create.sh`).
+- **`bump-pins.sh`** — resolver + drift gate. `--check` (offline) asserts
+  `tool-pins.env` equals every Dockerfile's `ARG` defaults; `--report` shows pinned
+  vs cooldown-eligible vs upstream-latest; `--write` resolves, re-hashes and
+  rewrites all of them. A bare run is a dry run. Wired into `.githooks/pre-commit`,
+  `make check`, and the CI `vendored` job.
+- **Cooldown window** (`COOLDOWN_DAYS`, default 7) — a release younger than this is
+  never selected. Recent npm compromises (chalk/debug, nx, shai-hulud) were
+  detected and unpublished within ~24h, so a one-week hold removes essentially all
+  zero-day-publish exposure at the cost of a few days of features.
+- **Claude binary hash pin** — the `@anthropic-ai/claude-code` npm package is a
+  ~20 KB *wrapper*; the real executable ships in a per-arch optionalDependency
+  (`claude-code-linux-{arm64,x64}`) whose postinstall copies it over
+  `bin/claude.exe`. Pinning the version alone therefore left the actual binary
+  resolved from the registry and unverified. Both Dockerfiles now assert the
+  SHA-256 of the installed native binary against a reviewed pin, and fail the
+  build on mismatch.
+- **`.github/workflows/bump-pins.yml`** — weekly job that runs the resolver and
+  opens a PR (via `gh`, adding no third-party action). Never auto-merged: the
+  version + hash diff is the reviewed anchor. Dependabot cannot cover this — it
+  tracks only Actions and the Docker base image.
+- **`make pins` / `pins-check` / `pins-report`** targets.
+
+### Changed — supply-chain hardening
+- **safe-chain is baked into the image** instead of `npm install -g`-ed at runtime
+  in `post-create.sh`. The old path was an unpinned registry fetch executed inside
+  the security boundary *before* safe-chain could screen anything — so a compromised
+  safe-chain release was the one package guaranteed to land unscreened. Its 8
+  transitive deps still resolve at build time and are **not** hash-pinned; this is a
+  reviewed version pin, not a closure pin.
+- **`DISABLE_AUTOUPDATER=1`** set explicitly. The root-owned npm prefix already
+  prevented Claude Code's self-updater from replacing the pinned binary, but left
+  enabled it retried every session, burning allowlisted egress and logging a
+  confusing permission failure. In these images an upgrade is a rebuild.
+- **`safe-chain` added to `binary-pins.txt`**, so the launch-time `verify-pins` gate
+  fingerprints it alongside node/npm/claude/gh/git/python3.
+- **`.devcontainer/Dockerfile` PATH order fixed** — the dev-writable
+  `/home/dev/.npm-global/bin` sat *second* on PATH, ahead of `/usr/local/bin` and
+  the system dirs, so a compromised agent could shadow the `sha256sum`/`awk` that
+  `verify-pins` itself shells out to and defeat the gate before it ran.
+  `sandbox/.devcontainer/Dockerfile` already had the hardened ordering (last on
+  PATH) plus the rationale comment; this back-ports it.
+
+### Fixed — apple/container build blockers (found while verifying the above)
+- **`test/egress-smoke.sh`** — the build context was passed unnormalised
+  (`$HERE/../sandbox/.devcontainer`). apple/container rejects a context path
+  containing `..` with `"<repo>/sandbox is not a child of <repo>/test/../sandbox/
+  .devcontainer"` and never starts the build, so `make test` could not run on the
+  fleet's own runtime (docker tolerates it, which is why CI never caught it).
+  Now resolved with `cd … && pwd -P`.
+- **Dockerfile size ceiling guard** in `bump-pins.sh --check`. apple/container
+  documents a 16384-byte limit and rejects larger files cleanly, but in practice
+  the builder crashes well below it with the undiagnosable `Error: unavailable:
+  "Stream unexpectedly closed."` and zero build output. Bisected on 2026-07-19:
+  12267/14268/14306/14801 build; 15307 and above fail. The gate now refuses
+  >14801 bytes and warns within 512 of it. Both Dockerfiles were trimmed to fit.
+- **The claude pin step restores `bin/claude.exe` only when needed.** Running
+  `install.cjs` unconditionally copies a 250 MB binary and exhausted the default
+  builder VM, crashing the build the same opaque way. The image ships npm 11, so
+  postinstall already places the binary and the copy is skipped; the final
+  on-PATH hash check still guarantees correctness on npm 12+, where it does run.
+
 ### Changed — performance (TODO.md Pass 8 findings, no behavior changes intended)
 - **sync.sh** — each vendored reference copy is generated once up front instead of
   once (check) or twice (sync) per file *per target*, cutting 18–36 `gen_vendored`/

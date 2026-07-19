@@ -127,6 +127,12 @@ jobs:
         # re-synced is caught, not just the three verbatim files. The vendored file
         # list comes from vendored-files.txt (single source, shared with sync.sh).
         run: EGRESS_SELF_ONLY=1 ./sync.sh --check
+      - name: bump-pins.sh --check (toolchain pins)
+        # Fully self-contained (reads only tool-pins.env + this repo's two
+        # Dockerfiles), so unlike sync.sh it needs no fleet checkout and DOES run
+        # here unconditionally. Catches a hand-bumped claude/node/python version
+        # that would silently diverge the two images from the canonical pins.
+        run: ./bump-pins.sh --check
 
   dockerfile:
     name: dockerfile lint

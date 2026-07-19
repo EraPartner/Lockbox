@@ -18,27 +18,24 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 
-# Supply-chain protection: install Aikido safe-chain so package installs are
-# screened against its malware list (malware-list.aikido.dev, allowlisted in
-# squid). `safe-chain setup` writes shell wrappers; BASH_ENV (set at container run)
-# sources them into every bash session so npm/bun/pip installs Claude runs
-# mid-session are screened. The project's own pinned deps below are installed
-# plain (already vetted via the lockfile) to avoid first-boot fragility.
-echo "[post-create] Installing safe-chain (supply-chain protection)..."
-sc_ok=0
-for attempt in 1 2 3; do
-  if npm install -g @aikidosec/safe-chain >/dev/null 2>&1 && command -v safe-chain >/dev/null 2>&1; then
-    sc_ok=1; break
-  fi
-  echo "[post-create] safe-chain install attempt $attempt failed; retrying..." >&2
-  sleep $(( attempt * 2 ))
-done
-if (( sc_ok )); then
+# Supply-chain protection: safe-chain screens package installs against its malware
+# list (malware-list.aikido.dev, allowlisted in squid). `safe-chain setup` writes
+# shell wrappers; BASH_ENV (set at container run) sources them into every bash
+# session so npm/bun/pip installs Claude runs mid-session are screened.
+#
+# safe-chain is now BAKED INTO THE IMAGE at a reviewed pin (see ../tool-pins.env
+# and the Dockerfile). It used to be `npm install -g @aikidosec/safe-chain` right
+# here: an UNPINNED registry fetch executed inside the security boundary, and
+# executed BEFORE it could screen anything — so a compromised safe-chain release
+# was the one package guaranteed to land unscreened. This step now only wires up
+# the shell wrappers: no network, no new code, nothing to retry.
+if command -v safe-chain >/dev/null 2>&1; then
   safe-chain setup >/dev/null 2>&1 || true
-  echo "[post-create] safe-chain installed (screens npm/bun/pip in later sessions)."
+  echo "[post-create] safe-chain wired up (baked pin, no runtime fetch)."
 else
-  echo "[post-create] ⚠ WARN: safe-chain install FAILED after retries — package installs are NOT" >&2
-  echo "[post-create]   supply-chain screened. \`.devcontainer/bin/doctor\` will flag this." >&2
+  echo "[post-create] ⚠ WARN: safe-chain MISSING FROM THE IMAGE — package installs are NOT" >&2
+  echo "[post-create]   supply-chain screened. The image was built wrong; rebuild it." >&2
+  echo "[post-create]   \`.devcontainer/bin/doctor\` will also flag this." >&2
 fi
 
 # No JS dependency install: LockBox is bash/shell infra with no root package.json /

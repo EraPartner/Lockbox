@@ -1,6 +1,13 @@
 # Dependabot version updates. LockBox has no application dependency manifests
 # (no bun/npm/pip lockfiles) — only pinned GitHub Actions and the devcontainer
 # Docker base image — so only those two ecosystems are tracked here.
+#
+# The BAKED TOOLCHAIN (claude-code, safe-chain, Node, Python) is deliberately NOT
+# here and cannot be: the Claude CLI is an `npm install -g` inside a RUN layer and
+# Node/Python are curl'd tarballs — none of which Dependabot parses. Those pins
+# live in ../tool-pins.env and are bumped weekly by workflows/bump-pins.yml, which
+# also enforces a cooldown window and re-hashes the claude native binary. Do not
+# add an `npm` ecosystem here expecting it to cover them.
 version: 2
 updates:
   - package-ecosystem: "github-actions"
