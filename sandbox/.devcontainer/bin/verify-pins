@@ -3,8 +3,7 @@
 # SHA-256 fingerprints pinned at image build
 # (/usr/local/share/dev-sandbox/binary-pins.txt). Fail-closed: nonzero exit on
 # any drift, path change, or missing manifest. bin/dev runs this before opening
-# `claude`, so a tampered/replaced node/npm/claude/gh/git/python3 aborts the
-# session instead of running silently.
+# an agent, so a tampered/replaced tool aborts instead of running silently.
 #
 # A non-zero exit after a *legitimate* tool upgrade is expected — rebuild the
 # image so the pins regenerate.

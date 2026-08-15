@@ -3,18 +3,21 @@
 #
 # Resolves the target (current git repo root, else $PWD), hashes its path so each
 # target gets its own container + private home volumes, mounts it READ-WRITE, and
-# opens claude inside the hardened image (egress-locked, PreToolUse guard,
-# launch-integrity pins). apple/container — Docker-free (formerly a Docker Compose launcher).
+# opens Claude Code or Codex inside the hardened image. apple/container only.
 #
 #   dev                 # run claude against $PWD's project
 #   dev --version       # forward any args to claude
 #   DEV_SANDBOX_PORTS="8787 3000" dev   # publish container ports to the host
 #   DEV_SANDBOX_SHELL=1 dev             # open a bash shell instead of claude
+#   DEV_SANDBOX_AGENT=codex dev          # use Codex (default: claude)
 #   DEV_SANDBOX_REBUILD=1 dev           # force image+container refresh
 #
 # Per-target egress overlay: if the target has .sandbox-allowlist.txt (or
 # .devcontainer/allowlist.extra.txt), its hosts are added on top of the base.
 set -euo pipefail
+
+AGENT="${DEV_SANDBOX_AGENT:-claude}"
+case "$AGENT" in claude|codex) ;; *) echo "dev: unsupported agent '$AGENT' (use claude or codex)" >&2; exit 2 ;; esac
 
 # --- 0) Resolve target dir (git repo root, else CWD) -------------------------
 TARGET="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || true)"
@@ -40,7 +43,7 @@ command -v container >/dev/null 2>&1 || { echo "dev: apple/container not install
 container system status >/dev/null 2>&1 || { echo "dev: container system not started — run: container system start" >&2; exit 1; }
 
 HASH="$(printf '%s' "$TARGET" | shasum 2>/dev/null | cut -c1-12 || echo target)"
-NAME="dev-sandbox-$HASH"
+if [[ "$AGENT" == claude ]]; then NAME="dev-sandbox-$HASH"; else NAME="dev-sandbox-codex-$HASH"; fi
 IMAGE="dev-sandbox:latest"
 STAGE_DIR="$HOME/.claude-sandbox/stage/$NAME"
 mkdir -p "$STAGE_DIR"
@@ -111,10 +114,10 @@ if [[ -n "${DEV_SANDBOX_PORTS:-}" ]]; then
 fi
 NEW_INBOUND="$(cat "$INBOUND_OUT" 2>/dev/null || true)"
 
-# --- 3) Stage a sanitized ~/.claude for the RO bind mount --------------------
+# --- 3) Load shared helpers and stage provider config when needed ------------
 # shellcheck source=../launcher-common.sh
 source "$DC/launcher-common.sh"
-sandbox_stage_claude_config "$NAME"
+if [[ "$AGENT" == claude ]]; then sandbox_stage_claude_config "$NAME"; fi
 
 # --- 3b) Lock host-executed git paths READ-ONLY (.git + relocated hooks) -------
 # Bind .git — and the effective core.hooksPath dir when it relocates hooks OUTSIDE
@@ -159,24 +162,27 @@ elif container ls -aq 2>/dev/null | grep -qx "$NAME"; then
   container start "$NAME" >/dev/null
   [[ "$OLD_INBOUND" != "$NEW_INBOUND" ]] && echo "$PORTS_CHANGED_MSG" >&2
 else
-  # Pre-flight the required RO bind-mount SOURCES. Unlike the per-target overlay
-  # paths (guarded above), these three are spliced UNCONDITIONALLY into the
-  # `container run` below, so a missing one aborts create with an opaque runtime
-  # error. The first two carry the PreToolUse guard + un-disableable managed
-  # settings (a SECURITY control), so fail closed with a clear message. (F: bin/dev
-  # missing-mount pre-flight)
+  # Pre-flight only the sources required by the selected agent.
   missing_mounts=()
-  for _src in \
-    "$HOME/.claude/hooks/guard.mjs" \
-    "$HOME/.claude/hooks/managed-settings.json" \
-    "$HOME/.gitconfig"; do
+  required_mounts=("$HOME/.gitconfig")
+  if [[ "$AGENT" == claude ]]; then
+    required_mounts+=("$HOME/.claude/hooks/guard.mjs" "$HOME/.claude/hooks/managed-settings.json")
+    AGENT_MOUNTS=(
+      -v "dev-sandbox-claude-$HASH:/home/dev/.claude"
+      -v "$STAGE_DIR:/home/dev/.claude-stage:ro"
+      -v "$HOME/.claude/hooks/guard.mjs:/usr/local/share/claude-guard/guard.mjs:ro"
+      -v "$HOME/.claude/hooks/managed-settings.json:/etc/claude-code/managed-settings.json:ro"
+    )
+  else
+    AGENT_MOUNTS=(-v "dev-sandbox-codex-$HASH:/home/dev/.codex")
+  fi
+  for _src in "${required_mounts[@]}"; do
     [[ -e "$_src" ]] || missing_mounts+=("$_src")
   done
   if (( ${#missing_mounts[@]} > 0 )); then
     echo "dev: missing required host file(s) for the read-only bind mounts:" >&2
     for _m in "${missing_mounts[@]}"; do echo "       - $_m" >&2; done
-    echo "     The PreToolUse guard + managed settings + git identity are mounted from" >&2
-    echo "     these paths; create them on the host, then re-run." >&2
+    echo "     Create the selected agent's required host files, then re-run." >&2
     exit 1
   fi
   container run -d --name "$NAME" \
@@ -189,6 +195,7 @@ else
     ${PORT_FLAGS[@]+"${PORT_FLAGS[@]}"} \
     -e DEVCONTAINER=true \
     -e DEV_SANDBOX=true \
+    -e SANDBOX_AGENT="$AGENT" \
     -e DISABLE_TELEMETRY=1 \
     -e DISABLE_ERROR_REPORTING=1 \
     -e BASH_ENV=/home/dev/.safe-chain/scripts/init-posix.sh \
@@ -201,12 +208,9 @@ else
     -e no_proxy=localhost,127.0.0.1,::1 \
     -v "$TARGET:/workspaces/project" \
     ${GIT_RO_MOUNTS[@]+"${GIT_RO_MOUNTS[@]}"} \
-    -v "dev-sandbox-claude-$HASH:/home/dev/.claude" \
     -v "dev-sandbox-config-$HASH:/home/dev/.config" \
     -v "dev-sandbox-local-$HASH:/home/dev/.local" \
-    -v "$STAGE_DIR:/home/dev/.claude-stage:ro" \
-    -v "$HOME/.claude/hooks/guard.mjs:/usr/local/share/claude-guard/guard.mjs:ro" \
-    -v "$HOME/.claude/hooks/managed-settings.json:/etc/claude-code/managed-settings.json:ro" \
+    ${AGENT_MOUNTS[@]+"${AGENT_MOUNTS[@]}"} \
     -v "$HOME/.gitconfig:/home/dev/.gitconfig-host:ro" \
     -v "$ALLOWLIST_OUT:/etc/squid/allowlist.txt:ro" \
     -v "$INBOUND_OUT:/etc/egress/inbound-ports:ro" \
@@ -222,7 +226,8 @@ CID="$NAME"
 # pinning RAM. Config push is opt-in (DEV_SANDBOX_AUTOSYNC=1). Power-down defaults
 # ON so a container you start cleans up after itself; DEV_SANDBOX_STOP_ON_EXIT=0
 # keeps it WARM for instant reuse. (F: orphaned-container on early abort)
-sandbox_install_autosync_trap "dev" "$CID" "${DEV_SANDBOX_AUTOSYNC:-0}" "${DEV_SANDBOX_STOP_ON_EXIT:-1}"
+if [[ "$AGENT" == claude ]]; then AUTOSYNC="${DEV_SANDBOX_AUTOSYNC:-0}"; else AUTOSYNC=0; fi
+sandbox_install_autosync_trap "dev" "$CID" "$AUTOSYNC" "${DEV_SANDBOX_STOP_ON_EXIT:-1}"
 
 # --- 6) Wait for the egress proxy, then replay lifecycle as dev ---------------
 # (post-create once, post-start every start). The proxy-wait (entrypoint applies
@@ -241,9 +246,9 @@ container exec --user dev "$NAME" bash -lc '
   [[ -f /home/dev/.postcreate-done ]] || { bash /usr/local/share/dev-sandbox/post-create.sh && touch /home/dev/.postcreate-done; }
   bash /usr/local/share/dev-sandbox/post-start.sh'
 
-# --- 7) Forward the Claude LLM token (no git push token in this box) ----------
+# --- 7) Forward provider credentials only to the final agent process ----------
 EXEC_ENV=()
-sandbox_forward_llm_creds "dev-sandbox-claude-code-token"
+if [[ "$AGENT" == claude ]]; then sandbox_forward_llm_creds "dev-sandbox-claude-code-token"; fi
 
 # --- 8) Launch-integrity gate (clean shell so safe-chain can't shadow paths) --
 # Invoke the gate by ABSOLUTE path, never by bare name: the dev-writable npm
@@ -261,18 +266,33 @@ CONTAINER_CWD="/workspaces/project"
 rel="${HOST_PWD#"$TARGET"}"
 [[ "$rel" != "$HOST_PWD" && -n "$rel" ]] && CONTAINER_CWD="/workspaces/project/${rel#/}"
 
-# --- 10) Open an interactive session -----------------------------------------
+# --- 10) Authenticate Codex on first use, then open the selected agent --------
 # (The on-exit config-sync/power-down trap was installed at step 5, right after the
 # container came up, so an early abort can't orphan the VM.)
 if [[ -n "${DEV_SANDBOX_SHELL:-}" ]]; then
   set -- bash
 else
-  set -- claude "$@"
+  set -- "$AGENT" "$@"
 fi
-# TTY only in a real terminal: interactive claude needs -i -t; piped/`-p` use gets
-# no flags so it doesn't wait on (absent) stdin.
 TTY_FLAGS=()
 [[ -t 0 && -t 1 ]] && TTY_FLAGS=(-i -t)
+if [[ "$AGENT" == codex && -z "${DEV_SANDBOX_SHELL:-}" ]] \
+   && ! container exec --user dev "$NAME" codex login status >/dev/null 2>&1; then
+  if [[ -n "${OPENAI_API_KEY:-}" ]]; then
+    container exec -i --user dev -e OPENAI_API_KEY "$NAME" \
+      bash -c 'printenv OPENAI_API_KEY | codex login --with-api-key'
+  elif [[ -n "${CODEX_ACCESS_TOKEN:-}" ]]; then
+    container exec -i --user dev -e CODEX_ACCESS_TOKEN "$NAME" \
+      bash -c 'printenv CODEX_ACCESS_TOKEN | codex login --with-access-token'
+  elif (( ${#TTY_FLAGS[@]} > 0 )); then
+    echo "dev: no cached Codex login; starting ChatGPT device-code login." >&2
+    container exec -i -t --user dev "$NAME" codex login --device-auth
+  else
+    echo "dev: no cached Codex login. Run interactively once, or set" >&2
+    echo "     OPENAI_API_KEY/CODEX_ACCESS_TOKEN for this launch." >&2
+    exit 1
+  fi
+fi
 set +e
 # F6: set the working dir with `container exec -w` (apple/container 1.0.0) instead
 # of a DEV_CWD env + `bash -c cd` wrapper. CONTAINER_CWD is always under the

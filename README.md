@@ -2,6 +2,10 @@
 
 **Canonical devcontainer egress lock + shared launcher helpers for the sandbox fleet.**
 
+The two sandboxes in this repository support both Claude Code and OpenAI Codex.
+Claude remains the compatibility default; provider selection does not change the
+firewall, proxy, read-only git mounts, or launch-integrity checks.
+
 Single source of truth for the egress firewall, the SNI-allowlist proxy, and the
 host-side launcher helpers used by the Vision, Watchman, Brain, Napoleon-relay,
 git-agent, and generic `sandbox` devcontainers. Previously each
@@ -49,8 +53,9 @@ downgrade to a warning).
     that publish services (Vision/Watchman). Absent = no inbound (Brain/git-agent).
 - `squid.conf` — peek+splice SNI-allowlist proxy. Identical everywhere.
 - `base-allowlist.txt` — the shared egress floor (Anthropic API + GitHub) needed by
-  every container. Keep minimal; adding here widens egress for all six.
-- `launcher-common.sh` — shared host-side launcher helpers (claude-config staging,
+  the existing fleet. OpenAI endpoints stay in the two in-repo overlays so Codex
+  support does not widen every sibling container.
+- `launcher-common.sh` — shared host-side launcher helpers (Claude-config staging,
   Keychain credential forwarding, autosync-on-exit trap) sourced by every launcher
   (`bin/claude`, `bin/agent`, `bin/git-agent`, `bin/dev`). Vendored into each
   `.devcontainer/` by `sync.sh` — edit it HERE, not the copies.
@@ -86,9 +91,30 @@ GENERATED — do not hand-edit). To change egress: edit `base-allowlist.txt` (al
 containers) or a project's `allowlist.extra.txt` (one container), then `./sync.sh`
 and rebuild. squid ignores `#`-comment and blank lines, so comments are safe.
 
+## Agent selection and authentication
+
+For LockBox itself, run `.devcontainer/bin/claude` or
+`.devcontainer/bin/codex`. For the generic sandbox, use:
+
+```sh
+sandbox/.devcontainer/bin/dev                    # Claude compatibility default
+DEV_SANDBOX_AGENT=codex sandbox/.devcontainer/bin/dev
+```
+
+The image bakes both CLIs. Each provider gets a separate container and private
+config volume. Claude keeps the existing sanitized config staging and runtime
+Keychain token flow. Codex never mounts host `~/.codex`; on first interactive
+launch it starts device-code login for ChatGPT subscription access. If
+`OPENAI_API_KEY` or enterprise `CODEX_ACCESS_TOKEN` is set for that first launch,
+the launcher uses the corresponding official non-browser login instead. Codex's
+runtime auth cache then persists only in the native named volume.
+
+Repository instructions are available to Codex/ChatGPT through `AGENTS.md` and
+to Claude through `CLAUDE.md`.
+
 ## Toolchain pins (staying current, safely)
 
-The images bake a Claude CLI, Node, Python and safe-chain. **They never fetch
+The in-repo images bake Claude and Codex CLIs, Node, Python and safe-chain. **They never fetch
 "latest" at runtime**, and that is deliberate: a runtime `npm i -g` would make the
 npm registry a trusted input *inside* the security boundary with no human in the
 loop, and it would defeat `bin/verify-pins` (which fails closed on SHA-256 drift
@@ -113,12 +139,13 @@ Two things worth knowing:
 - **Cooldown.** `COOLDOWN_DAYS` (default 7) refuses any release younger than that.
   Recent npm compromises were caught and unpublished within ~24h, so the hold costs
   a few days of features and removes nearly all zero-day-publish exposure.
-- **The claude pin is a *binary* hash, not just a version.** The
+- **The Claude and Codex pins include the native binary hash, not just a version.** The
   `@anthropic-ai/claude-code` package is a ~20 KB wrapper; the real executable
   ships in a per-arch optionalDependency that its postinstall copies into place. So
   the build asserts the SHA-256 of the installed native binary. A hash change at an
   *unchanged* version means the registry served different bytes — investigate, do
-  not merge.
+  not merge. Codex likewise ships per-platform native payloads through npm aliases,
+  and the Docker build verifies the selected Linux payload before it can run.
 
 Node stays within its pinned major line; crossing a major is a platform decision
 and is reported but never applied automatically. `gh` and the apt packages stay

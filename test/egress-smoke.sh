@@ -67,14 +67,21 @@ squid=0
 for _ in $(seq 1 20); do cx sh -c 'pgrep -x squid >/dev/null 2>&1' && { squid=1; break; }; sleep 1; done
 (( squid )) && ok "squid proxy running" || bad "squid proxy NOT running"
 
-# 3) off-allowlist host BLOCKED (no internet needed — squid terminates on SNI).
+# 3) launch-integrity manifest — now covers both supported agent CLIs.
+if cx /usr/local/bin/dev-sandbox-verify-pins >/dev/null 2>&1; then
+  ok "launch-integrity manifest verified (Claude Code + Codex)"
+else
+  bad "launch-integrity manifest FAILED"
+fi
+
+# 4) off-allowlist host BLOCKED (no internet needed — squid terminates on SNI).
 if cx sh -c "curl -sS -x $PROXY --max-time 12 -o /dev/null https://example.com/ 2>/dev/null"; then
   bad "off-allowlist host example.com was REACHABLE — allowlist NOT enforced"
 else
   ok "off-allowlist host blocked (example.com)"
 fi
 
-# 4) non-CONNECT cleartext REFUSED — the squid.conf CONNECT-only guarantee. A
+# 5) non-CONNECT cleartext REFUSED — the squid.conf CONNECT-only guarantee. A
 #    `http://host:443/` request is absolute-URI/non-CONNECT: it clears deny !Safe_ports
 #    (443) then hits `deny !CONNECT` => squid 403. No internet needed (squid denies
 #    before egress). If this regressed to `allow allowed_dom`, squid would forward
@@ -86,13 +93,20 @@ else
   bad "non-CONNECT cleartext NOT refused (got '${ccode:-none}', expected 403 — CONNECT-only regressed?)"
 fi
 
-# 5) on-allowlist host REACHABLE (SOFT — needs real egress; a restricted runner
-#    should not fail the security gate on this).
+# 6) provider API hosts REACHABLE (SOFT — needs real egress; a restricted runner
+#    should not fail the security gate on these checks).
 code="$(cx sh -c "curl -sS -x $PROXY --max-time 15 -o /dev/null -w '%{http_code}' https://api.anthropic.com/ 2>/dev/null" || true)"
 if [[ "$code" =~ ^[1-5][0-9][0-9]$ ]]; then
   ok "on-allowlist host reachable via proxy (api.anthropic.com HTTP $code)"
 else
   note "on-allowlist host not reachable (curl status '${code:-none}') — expected if the runner has no egress"
+fi
+
+code="$(cx sh -c "curl -sS -x $PROXY --max-time 15 -o /dev/null -w '%{http_code}' https://api.openai.com/ 2>/dev/null" || true)"
+if [[ "$code" =~ ^[1-5][0-9][0-9]$ ]]; then
+  ok "on-allowlist host reachable via proxy (api.openai.com HTTP $code)"
+else
+  note "OpenAI host not reachable (curl status '${code:-none}') — expected if the runner has no egress"
 fi
 
 echo

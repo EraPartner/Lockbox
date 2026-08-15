@@ -2,8 +2,7 @@
 # Launch-integrity check. Verifies the agent's executables still match the
 # SHA-256 fingerprints pinned at image build (/usr/local/share/lockbox/binary-pins.txt).
 # Fail-closed: nonzero exit on any drift, path change, or missing manifest.
-# bin/claude runs this before opening `claude`, so a tampered/replaced
-# node/npm/claude/gh/git aborts the session instead of running silently.
+# The launcher runs this before either agent, so a replaced tool aborts.
 #
 # A non-zero exit after a *legitimate* tool upgrade is expected — rebuild the
 # image so the pins regenerate.

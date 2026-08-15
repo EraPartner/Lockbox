@@ -5,6 +5,7 @@
 
 set -euo pipefail
 
+AGENT="${SANDBOX_AGENT:-claude}"
 STAGE=/home/dev/.claude-stage
 
 # Auto-pull the sanitized host Claude config into the container on every start.
@@ -18,10 +19,10 @@ STAGE=/home/dev/.claude-stage
 #     with the static staged snapshot each start. Consequence: host .claude.json
 #     edits do NOT propagate to an already-created container (rebuild to re-seed);
 #     the staged copy only fills in keys the container doesn't already have.
-if [[ -d "$STAGE/dot-claude" && -d /home/dev/.claude ]]; then
+if [[ "$AGENT" == claude && -d "$STAGE/dot-claude" && -d /home/dev/.claude ]]; then
   rsync -a --update --ignore-errors "$STAGE/dot-claude/" /home/dev/.claude/ 2>/dev/null || true
 fi
-if [[ -f "$STAGE/claude.json" && -f /home/dev/.claude.json ]]; then
+if [[ "$AGENT" == claude && -f "$STAGE/claude.json" && -f /home/dev/.claude.json ]]; then
   tmp=$(mktemp)
   if jq -s '.[1] * .[0] | del(.installMethod, .autoUpdatesProtectedForNative)' /home/dev/.claude.json "$STAGE/claude.json" > "$tmp" 2>/dev/null && [[ -s "$tmp" ]]; then
     mv "$tmp" /home/dev/.claude.json
@@ -30,7 +31,9 @@ if [[ -f "$STAGE/claude.json" && -f /home/dev/.claude.json ]]; then
   fi
 fi
 # Background-task state isn't meaningful here; keep the volume converged.
-for p in scheduled-tasks tasks jobs daemon; do rm -rf "/home/dev/.claude/$p" 2>/dev/null || true; done
+if [[ "$AGENT" == claude ]]; then
+  for p in scheduled-tasks tasks jobs daemon; do rm -rf "/home/dev/.claude/$p" 2>/dev/null || true; done
+fi
 
 # Fail the lifecycle if the egress firewall didn't verify (fail-closed regardless,
 # but surface it loudly).
@@ -42,4 +45,4 @@ EOF
   exit 1
 fi
 
-echo "[post-start] Ready. Run \`claude\` in /workspaces/project. Health: \`dev-sandbox-doctor\`."
+echo "[post-start] Ready. Run \`$AGENT\` in /workspaces/project. Health: \`dev-sandbox-doctor\`."

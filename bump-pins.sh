@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Toolchain pin resolver / drift gate for LockBox.
 #
-# WHY THIS EXISTS: the sandbox images bake a Claude CLI, Node, Python and
+# WHY THIS EXISTS: the sandbox images bake agent CLIs, Node, Python and
 # safe-chain. "Always run the latest" is NOT achievable safely at container
 # runtime — a runtime `npm i -g` would (a) make the npm registry a trusted
 # input inside the security boundary with no human in the loop, and (b) delete
@@ -105,16 +105,12 @@ if [[ "$MODE" == check ]]; then
       echo "WARN: $(label "$df") is ${sz} bytes — only $((DOCKERFILE_MAX_BYTES - sz)) left before apple/container's practical build ceiling." >&2
     fi
   done
-  # REQUIRED in every managed Dockerfile. Node/Python verify themselves against
-  # upstream SHASUMS at build, so only their versions are mirrored; claude needs the
-  # version AND the per-arch binary hash (see the header).
+  # REQUIRED in every managed Dockerfile. Node/Python verify against upstream
+  # SHASUMS; Claude is currently fleet-wide.
   MIRRORED=(NODE_VERSION PY_RELEASE PY_VERSION CLAUDE_CODE_VERSION
             CLAUDE_CODE_SHA256_ARM64 CLAUDE_CODE_SHA256_AMD64)
-  # OPTIONAL: only the images that BAKE safe-chain declare this. The rest still
-  # install it at runtime in post-create (unpinned) — tracked as a follow-up, since
-  # baking it in each repo also means editing that repo's post-create.sh. Where the
-  # ARG is present it must match; where it is absent it is not an error.
-  OPTIONAL_MIRRORED=(SAFE_CHAIN_VERSION)
+  # OPTIONAL: Codex and safe-chain are currently baked by only some images.
+  OPTIONAL_MIRRORED=(CODEX_VERSION CODEX_SHA256_ARM64 CODEX_SHA256_AMD64 SAFE_CHAIN_VERSION)
   for df in "${DOCKERFILES[@]}"; do
     [[ -f "$df" ]] || { echo "bump-pins: MISSING Dockerfile $df" >&2; rc=1; continue; }
     for k in "${MIRRORED[@]}"; do
@@ -212,8 +208,24 @@ claude_binary_sha() {
   rm -rf "$tgz" "$dir"
 }
 
+# Codex uses platform variants of @openai/codex. Hash the native executable,
+# not the small JavaScript dispatcher in the base package.
+codex_binary_sha() {
+  local version="$1" plat="$2" tgz dir out
+  tgz="$(mktemp)"; dir="$(mktemp -d)"
+  curl -fsSLo "$tgz" \
+    "https://registry.npmjs.org/@openai/codex/-/codex-${version}-${plat}.tgz" \
+    || { echo "bump-pins: ERROR fetching codex@${version}-${plat}" >&2; rm -rf "$tgz" "$dir"; exit 1; }
+  tar -xzf "$tgz" -C "$dir"
+  out="$(find "$dir" -type f -path '*/bin/codex' | head -1)"
+  [[ -n "$out" ]] || { echo "bump-pins: ERROR no binary found in codex@${version}-${plat}" >&2; rm -rf "$tgz" "$dir"; exit 1; }
+  sha256_of "$out"
+  rm -rf "$tgz" "$dir"
+}
+
 echo "Resolving pins (cooldown ${COOLDOWN_DAYS}d)..." >&2
 read -r CC_PICK CC_LATEST CC_LATEST_DATE CC_AGE < <(npm_pick "@anthropic-ai/claude-code")
+read -r CX_PICK CX_LATEST CX_LATEST_DATE CX_AGE < <(npm_pick "@openai/codex")
 read -r SC_PICK SC_LATEST SC_LATEST_DATE SC_AGE < <(npm_pick "@aikidosec/safe-chain")
 
 # Node: official release index. Report the newest release WITHIN THE PINNED MAJOR
@@ -246,6 +258,8 @@ if [[ "$MODE" == report ]]; then
   note() { [[ "$1" == "$2" ]] && echo "current" || echo "BEHIND"; }
   printf '%-22s %-12s %-12s %-12s %s\n' claude-code "$CLAUDE_CODE_VERSION" "$CC_PICK" "$CC_LATEST" \
     "$(note "$CLAUDE_CODE_VERSION" "$CC_PICK") (latest published $CC_LATEST_DATE)"
+  printf '%-22s %-12s %-12s %-12s %s\n' codex "$CODEX_VERSION" "$CX_PICK" "$CX_LATEST" \
+    "$(note "$CODEX_VERSION" "$CX_PICK") (latest published $CX_LATEST_DATE)"
   printf '%-22s %-12s %-12s %-12s %s\n' safe-chain "$SAFE_CHAIN_VERSION" "$SC_PICK" "$SC_LATEST" \
     "$(note "$SAFE_CHAIN_VERSION" "$SC_PICK") (latest published $SC_LATEST_DATE)"
   printf '%-22s %-12s %-12s %-12s %s\n' "node (${NODE_VERSION%%.*}.x)" "$NODE_VERSION" - "$NODE_LATEST" \
@@ -261,13 +275,15 @@ fi
 # --write / dry-run — resolve, hash, rewrite.
 # ---------------------------------------------------------------------------
 if [[ "$CC_PICK" == "$CLAUDE_CODE_VERSION" \
+   && "$CX_PICK" == "$CODEX_VERSION" \
    && "$SC_PICK" == "$SAFE_CHAIN_VERSION" \
    && "$NODE_LATEST" == "$NODE_VERSION" ]]; then
-  echo "Already at the newest cooldown-eligible pins (claude-code $CC_PICK, safe-chain $SC_PICK, node $NODE_VERSION). Nothing to do."
+  echo "Already at the newest cooldown-eligible pins (claude-code $CC_PICK, codex $CX_PICK, safe-chain $SC_PICK, node $NODE_VERSION). Nothing to do."
   exit 0
 fi
 
 [[ "$CC_PICK"     != "$CLAUDE_CODE_VERSION" ]] && echo "claude-code : $CLAUDE_CODE_VERSION -> $CC_PICK  (${CC_AGE}d old; latest is $CC_LATEST, held by cooldown)"
+[[ "$CX_PICK"     != "$CODEX_VERSION"       ]] && echo "codex       : $CODEX_VERSION -> $CX_PICK  (${CX_AGE}d old; latest is $CX_LATEST, held by cooldown)"
 [[ "$SC_PICK"     != "$SAFE_CHAIN_VERSION"  ]] && echo "safe-chain  : $SAFE_CHAIN_VERSION -> $SC_PICK  (${SC_AGE}d old; latest is $SC_LATEST)"
 # Node stays WITHIN the pinned major line — a major bump changes the platform and
 # must be a human decision, so it is reported but never auto-applied. No separate
@@ -287,6 +303,17 @@ fi
 echo "  claude linux-arm64 sha256: $NEW_CC_ARM64"
 echo "  claude linux-x64   sha256: $NEW_CC_AMD64"
 
+if [[ "$CX_PICK" != "$CODEX_VERSION" ]]; then
+  echo "Hashing codex native binaries (~220 MB per arch)..." >&2
+  NEW_CX_ARM64="$(codex_binary_sha "$CX_PICK" linux-arm64)"
+  NEW_CX_AMD64="$(codex_binary_sha "$CX_PICK" linux-x64)"
+else
+  NEW_CX_ARM64="$CODEX_SHA256_ARM64"
+  NEW_CX_AMD64="$CODEX_SHA256_AMD64"
+fi
+echo "  codex linux-arm64 sha256: $NEW_CX_ARM64"
+echo "  codex linux-x64   sha256: $NEW_CX_AMD64"
+
 if [[ "$MODE" != write ]]; then
   echo
   echo "DRY RUN — nothing written. Re-run with --write to apply."
@@ -304,6 +331,9 @@ set_pin() {
 set_pin CLAUDE_CODE_VERSION      "$CC_PICK"
 set_pin CLAUDE_CODE_SHA256_ARM64 "$NEW_CC_ARM64"
 set_pin CLAUDE_CODE_SHA256_AMD64 "$NEW_CC_AMD64"
+set_pin CODEX_VERSION             "$CX_PICK"
+set_pin CODEX_SHA256_ARM64        "$NEW_CX_ARM64"
+set_pin CODEX_SHA256_AMD64        "$NEW_CX_AMD64"
 set_pin SAFE_CHAIN_VERSION       "$SC_PICK"
 set_pin NODE_VERSION             "$NODE_LATEST"
 
@@ -314,6 +344,9 @@ for df in "${DOCKERFILES[@]}"; do
   sed -e "s|^ARG CLAUDE_CODE_VERSION=.*$|ARG CLAUDE_CODE_VERSION=${CC_PICK}|" \
       -e "s|^ARG CLAUDE_CODE_SHA256_ARM64=.*$|ARG CLAUDE_CODE_SHA256_ARM64=${NEW_CC_ARM64}|" \
       -e "s|^ARG CLAUDE_CODE_SHA256_AMD64=.*$|ARG CLAUDE_CODE_SHA256_AMD64=${NEW_CC_AMD64}|" \
+      -e "s|^ARG CODEX_VERSION=.*$|ARG CODEX_VERSION=${CX_PICK}|" \
+      -e "s|^ARG CODEX_SHA256_ARM64=.*$|ARG CODEX_SHA256_ARM64=${NEW_CX_ARM64}|" \
+      -e "s|^ARG CODEX_SHA256_AMD64=.*$|ARG CODEX_SHA256_AMD64=${NEW_CX_AMD64}|" \
       -e "s|^ARG SAFE_CHAIN_VERSION=.*$|ARG SAFE_CHAIN_VERSION=${SC_PICK}|" \
       -e "s|^ARG NODE_VERSION=.*$|ARG NODE_VERSION=${NODE_LATEST}|" \
       "$df" > "$tmp"

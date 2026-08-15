@@ -3,8 +3,8 @@
 # Run inside the container:  dev-sandbox-doctor
 #
 # Verifies the workspace is writable, the egress lock + proxy are up and
-# enforcing the allowlist, the launch-integrity pins match, and the LLM token is
-# present.
+# enforcing the allowlist, the launch-integrity pins match, and provider auth is
+# ready.
 
 set -uo pipefail
 WS=/workspaces/project
@@ -18,7 +18,7 @@ if ( : > "$WS/.doctor.$$" ) 2>/dev/null; then rm -f "$WS/.doctor.$$"; ok "worksp
 git -C "$WS" rev-parse --short HEAD >/dev/null 2>&1 && ok "git read ops work (HEAD: $(git -C "$WS" rev-parse --short HEAD 2>/dev/null))" || note "not a git repo (or no commits) — fine for non-git targets"
 
 echo "== Toolchain =="
-for b in node npm claude gh git python3; do
+for b in node npm claude codex gh git python3; do
   command -v "$b" >/dev/null 2>&1 && ok "$b present ($("$b" --version 2>/dev/null | head -1))" || bad "$b missing"
 done
 
@@ -27,7 +27,7 @@ if [[ -x /usr/local/bin/dev-sandbox-verify-pins ]]; then
   # Absolute path — a bare-name call could resolve to a dev-writable shadow.
   pin_err="$(/usr/local/bin/dev-sandbox-verify-pins --quiet 2>&1 >/dev/null)"
   if [[ -z "$pin_err" ]]; then
-    ok "node/npm/claude/gh/git/python3 match build-time fingerprints"
+    ok "agent CLIs and shared tools match build-time fingerprints"
   else
     while IFS= read -r line; do [[ -n "$line" ]] && bad "$line"; done <<<"$pin_err"
   fi
@@ -39,14 +39,15 @@ echo "== Egress lock (allowlist-enforced) =="
 [[ -f /run/egress-firewall-ok ]] && ok "firewall sentinel present" || bad "firewall sentinel missing (/run/egress-firewall-ok)"
 pgrep -x squid >/dev/null 2>&1 && ok "squid running" || bad "squid not running"
 (exec 3<>/dev/tcp/127.0.0.1/3128) 2>/dev/null && ok "proxy listening on 127.0.0.1:3128" || bad "proxy not listening on :3128"
-anthropic_code="$(curl -sS --max-time 12 -o /dev/null -w '%{http_code}' https://api.anthropic.com/ 2>/dev/null || true)"
+if [[ "${SANDBOX_AGENT:-claude}" == codex ]]; then provider_host=api.openai.com; else provider_host=api.anthropic.com; fi
+provider_code="$(curl -sS --max-time 12 -o /dev/null -w '%{http_code}' "https://$provider_host/" 2>/dev/null || true)"
 # curl prints 000 on a connect/proxy failure. The old `grep '^[0-9]'` matched 000
 # too, so this check could NEVER fail. Require a real HTTP status (1xx–5xx); any
 # response means the proxy reached the host (403/401 still count as reachable).
-if [[ "$anthropic_code" =~ ^[1-5][0-9][0-9]$ ]]; then
-  ok "Anthropic API reachable via proxy (HTTP $anthropic_code)"
+if [[ "$provider_code" =~ ^[1-5][0-9][0-9]$ ]]; then
+  ok "$provider_host reachable via proxy (HTTP $provider_code)"
 else
-  note "could not reach api.anthropic.com (curl status: ${anthropic_code:-none})"
+  note "could not reach $provider_host (curl status: ${provider_code:-none})"
 fi
 if curl -sS --max-time 8 -o /dev/null https://example.com/ 2>/dev/null; then
   bad "DENIED host example.com was reachable — allowlist not enforced!"
@@ -54,7 +55,9 @@ else ok "denied host blocked (example.com)"; fi
 echo "  (effective allowlist: $(grep -cvE '^\s*#|^\s*$' /etc/squid/allowlist.txt 2>/dev/null || echo '?') hosts)"
 
 echo "== LLM credentials =="
-if [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}${ANTHROPIC_API_KEY:-}${ANTHROPIC_AUTH_TOKEN:-}" ]]; then
+if [[ "${SANDBOX_AGENT:-claude}" == codex ]]; then
+  if codex login status >/dev/null 2>&1; then ok "Codex login cache is valid"; else bad "Codex is not logged in"; fi
+elif [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}${ANTHROPIC_API_KEY:-}${ANTHROPIC_AUTH_TOKEN:-}" ]]; then
   ok "Claude token in env"
 else
   # The launcher forwards the token via the FINAL `claude` exec's env (bin/dev's

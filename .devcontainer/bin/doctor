@@ -13,7 +13,7 @@ FAILED=0
 echo "LockBox devcontainer doctor"
 echo "----------------------------"
 
-# Sandbox integrity: .devcontainer holds the HOST-side launcher (bin/claude) and
+# Sandbox integrity: .devcontainer holds the HOST-side agent launchers and
 # the sandbox definition (Dockerfile, launcher run args). If writable from inside,
 # a compromised agent can rewrite them and escape to the host on the next launch.
 # The launcher mounts it read-only, but that only applies on container CREATE — a
@@ -32,12 +32,13 @@ fi
 if (exec 3<>/dev/tcp/127.0.0.1/3128) 2>/dev/null; then pass "egress proxy listening on 127.0.0.1:3128"
 else fail "egress proxy NOT listening on 127.0.0.1:3128 (check 'container logs <id>')"; fi
 
-# Allowed egress through the proxy?
-code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 12 https://api.anthropic.com/ 2>/dev/null || echo 000)
-[[ "$code" != 000 ]] && pass "egress via proxy reaches api.anthropic.com (HTTP $code)" || fail "cannot reach api.anthropic.com through the proxy"
+# Allowed provider egress through the proxy?
+if [[ "${SANDBOX_AGENT:-claude}" == codex ]]; then provider_host=api.openai.com; else provider_host=api.anthropic.com; fi
+code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 12 "https://$provider_host/" 2>/dev/null || echo 000)
+[[ "$code" != 000 ]] && pass "egress via proxy reaches $provider_host (HTTP $code)" || fail "cannot reach $provider_host through the proxy"
 
 # Direct egress should be blocked.
-if curl -sS -o /dev/null --max-time 6 --noproxy '*' https://api.anthropic.com/ 2>/dev/null; then
+if curl -sS -o /dev/null --max-time 6 --noproxy '*' "https://$provider_host/" 2>/dev/null; then
   fail "DIRECT egress (bypassing proxy) succeeded — firewall not enforcing!"
 else pass "direct egress (bypassing proxy) is blocked"; fi
 
@@ -51,15 +52,20 @@ else pass "non-allowlisted host denied by the proxy allowlist"; fi
 command -v node >/dev/null && pass "node $(node -v)" || fail "node missing"
 command -v npm  >/dev/null && pass "npm $(npm -v)"  || fail "npm missing"
 command -v claude >/dev/null && pass "claude $(claude --version 2>/dev/null | head -1)" || fail "claude missing"
+if command -v codex >/dev/null; then pass "codex $(codex --version 2>/dev/null | head -1)"; else fail "codex missing"; fi
 command -v safe-chain >/dev/null && pass "safe-chain present (package installs are screened)" \
   || fail "safe-chain MISSING — npm/bun/pip installs are NOT supply-chain screened"
 # LockBox-specific toolchain (shell infra).
 command -v shellcheck >/dev/null && pass "shellcheck $(shellcheck --version 2>/dev/null | awk '/version:/{print $2}')" || fail "shellcheck missing"
 command -v make >/dev/null && pass "make present" || fail "make missing"
 
-# Claude auth token forwarded?
-[[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]] && pass "CLAUDE_CODE_OAUTH_TOKEN present" \
-  || echo "  note CLAUDE_CODE_OAUTH_TOKEN not set in this shell (the wrapper forwards it to claude only)"
+# Provider auth. Codex keeps its login in the private ~/.codex volume.
+if [[ "${SANDBOX_AGENT:-claude}" == codex ]]; then
+  if codex login status >/dev/null 2>&1; then pass "Codex login cache is valid"; else fail "Codex is not logged in"; fi
+else
+  [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]] && pass "CLAUDE_CODE_OAUTH_TOKEN present" \
+    || echo "  note CLAUDE_CODE_OAUTH_TOKEN not set in this shell (the wrapper forwards it to claude only)"
+fi
 
 # gh token forwarded?
 [[ -z "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ]] \
@@ -70,9 +76,13 @@ command -v make >/dev/null && pass "make present" || fail "make missing"
 if [[ -r /var/log/squid/access.log ]]; then pass "egress audit log readable: /var/log/squid/access.log"
 else echo "  note /var/log/squid/access.log not yet created or unreadable (appears after first request)"; fi
 
-# Claude config seeded (no onboarding)?
-[[ -f /home/dev/.claude/settings.json ]] && pass "~/.claude seeded (settings.json present)" \
-  || fail "~/.claude not seeded — claude will show first-run onboarding"
+# Claude config is staged only for Claude sessions; Codex uses its private volume.
+if [[ "${SANDBOX_AGENT:-claude}" == claude ]]; then
+  [[ -f /home/dev/.claude/settings.json ]] && pass "Claude config seeded (settings.json present)" \
+    || fail "Claude config not seeded — claude will show first-run onboarding"
+else
+  if [[ -d /home/dev/.codex ]]; then pass "Codex private config volume present"; else fail "Codex config directory missing"; fi
+fi
 
 # Host disk: the workspace is a bind mount onto the host filesystem, so a
 # runaway write here fills the HOST disk (no quota). Warn when free space is low.

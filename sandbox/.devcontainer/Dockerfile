@@ -1,11 +1,7 @@
 # Generic universal full-dev sandbox image — devcontainer-FREE (built by `container build`).
 #
-# One image, ANY project: bin/dev mounts the current directory (or git repo root)
-# RW at /workspaces/project and runs claude inside, with the SAME egress lock,
-# PreToolUse guard, and launch-integrity pins as the per-project sandboxes — but
-# with no project-specific toolchain baked in. Ships Node + Python so JS/TS and
-# Python projects (e.g. scrim) work out of the box; richer stacks should keep
-# their own .devcontainer.
+# One image, ANY project: bin/dev mounts the project read-write and runs Claude
+# Code or Codex behind the same egress lock and launch-integrity gate.
 #
 # Hardened like the others:
 #   - no privilege escalation: setuid/setgid bits stripped, no sudo (apple/container has no --security-opt)
@@ -90,16 +86,8 @@ RUN set -eux; \
 # build-essential), not clang. Pin CC=gcc so source C-extension builds work.
 ENV CC=gcc CXX=g++
 
-# Build-time global prefix for the agent CLI (claude). Kept ROOT-owned (see the
-# claude install below) so the unprivileged dev user can't overwrite the pinned
-# claude/npm binaries post-launch (the verify-pins gate fingerprints these paths).
-# Runtime `npm i -g` (safe-chain) uses a SEPARATE dev-owned prefix,
-# /home/dev/.npm-global. That prefix is dev-WRITABLE and persists in the writable
-# layer, so it goes LAST on PATH — after the system dirs too. A compromised agent
-# must not be able to shadow a pinned or system tool (claude/npm/node/git/gh/
-# python3, or the sha256sum/awk that verify-pins itself relies on) by dropping a
-# same-named binary there. The pinned tool dirs stay first so claude resolves to
-# the pinned copy; dev's own global installs still resolve, just at lowest priority.
+# Agent CLIs use a root-owned prefix. The dev-writable runtime prefix stays last
+# on PATH so it cannot shadow pinned tools or the integrity check's helpers.
 ENV NPM_CONFIG_PREFIX=/usr/local/share/npm-global
 ENV PATH=/usr/local/share/npm-global/bin:/opt/python/bin:/usr/local/bin:$PATH:/home/dev/.npm-global/bin
 # Login shells reset PATH via /etc/profile; re-add the tool dirs for them too.
@@ -107,14 +95,8 @@ RUN printf 'export PATH="/usr/local/share/npm-global/bin:/opt/python/bin:/usr/lo
       > /etc/profile.d/00-sandbox-path.sh
 
 # --- Claude Code CLI ----------------------------------------------------------
-# Installed as root into the root-owned global prefix and deliberately NOT chown'd
-# to dev — so the pinned claude/npm cannot be replaced by the dev user.
-# PINNED from ../../tool-pins.env (rationale: README "Toolchain pins"). Never
-# hand-edit — ./bump-pins.sh --write rewrites this and tool-pins.env together,
-# and --check (pre-commit + CI) fails on divergence. The npm package is a ~20 KB
-# wrapper; the real binary is a per-arch optional dep that postinstall copies to
-# bin/claude.exe. We hash the PAYLOAD, restore it if postinstall was blocked
-# (npm >= 12 leaves a 500-byte stub), then re-check PATH. Fail-closed.
+# Root-owned and pinned from tool-pins.env. Hash the native optional-dependency
+# payload and restore it when npm leaves the wrapper stub.
 ARG CLAUDE_CODE_VERSION=2.1.207
 ARG CLAUDE_CODE_SHA256_ARM64=8bc14a284065383460f37981d724b8f7aa7ca93c9849d2fe367e08f03383f454
 ARG CLAUDE_CODE_SHA256_AMD64=85e7e988a392d859f90802ca21fb26e89d3c9ab527f5ed0b08df3955e34d5c83
@@ -137,6 +119,21 @@ RUN set -eux; \
     got2="$(sha256sum "$run" | awk '{print $1}')"; \
     test "$got2" = "$want" || exit 1; \
     claude --version
+
+# --- OpenAI Codex CLI --------------------------------------------------------
+ARG CODEX_VERSION=0.147.0
+ARG CODEX_SHA256_ARM64=e23d0be344d2496986c985cd3db61e6f649b1ddd900e6afc1b5aaabbffcbb4e2
+ARG CODEX_SHA256_AMD64=cb0a15567e9a60a5820d54b0f6ae86d504dc3805c1eab21a47f70e3eb7b73a40
+RUN set -eux; \
+    npm install -g --no-fund --no-audit "@openai/codex@${CODEX_VERSION}"; \
+    case "$(dpkg --print-architecture)" in arm64) target=aarch64-unknown-linux-musl; want="${CODEX_SHA256_ARM64}" ;; amd64) target=x86_64-unknown-linux-musl; want="${CODEX_SHA256_AMD64}" ;; *) exit 1 ;; esac; \
+    root="$(npm root -g)/@openai/codex"; \
+    payload="$(find "$root/node_modules" -type f -path "*/vendor/${target}/bin/codex" | head -1)"; \
+    test -n "$payload"; \
+    got="$(sha256sum "$payload" | awk '{print $1}')"; \
+    echo "codex pin: want=$want got=$got"; \
+    test "$want" = "$got"; \
+    codex --version
 
 # --- safe-chain (supply-chain screening for ad-hoc installs) ------------------
 # BAKED, not installed at runtime: post-create.sh used to `npm i -g` this unpinned
@@ -174,20 +171,15 @@ RUN mkdir -p /etc/squid/certs /var/lib/squid /var/log/squid /var/spool/squid \
   && chown -R proxy:proxy /etc/squid/certs /var/lib/squid /var/log/squid /var/spool/squid
 
 # Pre-create dirs backed by named volumes so a fresh volume inherits dev ownership.
-RUN install -d -o dev -g dev -m 0700 /home/dev/.claude \
+RUN install -d -o dev -g dev -m 0700 /home/dev/.claude /home/dev/.codex \
  && install -d -o dev -g dev -m 0755 /home/dev/.config /home/dev/.config/gh /home/dev/.local
 
-# Pin the agent's executables: record SHA-256 of each binary PATH resolves to, so
-# dev-sandbox-verify-pins can fail-closed on drift at launch. A legitimate tool
-# upgrade changes these hashes — rebuild the image to re-pin. This fingerprints only
-# the tools installed above (none of the COPY'd files), so it too sits BEFORE the
-# frequently-edited COPY block, and BEFORE the setuid strip (which changes only mode
-# bits, not the hashed content).
+# Fingerprint the resolved tools for the launch-time drift gate.
 RUN set -eux; \
     pinfile=/usr/local/share/dev-sandbox/binary-pins.txt; \
     mkdir -p /usr/local/share/dev-sandbox; \
     : > "$pinfile"; \
-    for b in node npm claude gh git python3 safe-chain; do \
+    for b in node npm claude codex gh git python3 safe-chain; do \
       p="$(command -v "$b")"; \
       h="$(sha256sum "$p" | awk '{print $1}')"; \
       printf '%s\t%s\t%s\n' "$b" "$p" "$h" >> "$pinfile"; \

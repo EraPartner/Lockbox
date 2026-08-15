@@ -38,7 +38,7 @@ codeload.github.com
 # LockBox/sync.sh into the baked allowlist.txt). The base already grants the
 # Anthropic API + GitHub (git over HTTPS + api.github.com), which covers editing
 # this repo and gh. LockBox is bash/shell infra — its sync.sh/audit.sh run purely
-# locally — so the only extra egress is what Claude Code's own tooling needs.
+# locally — so extras are limited to the supported agents and build tooling.
 
 # Anthropic / Claude Code (auth, auto-updater, docs beyond the base API).
 platform.claude.com
@@ -46,6 +46,11 @@ claude.ai
 code.claude.com
 docs.claude.com
 downloads.claude.ai
+
+# OpenAI Codex — API-key traffic plus ChatGPT/device-code authentication.
+api.openai.com
+auth.openai.com
+chatgpt.com
 
 # npm — safe-chain install + any ad-hoc `npm i`.
 registry.npmjs.org

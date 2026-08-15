@@ -12,7 +12,7 @@ name: Bump toolchain pins
 #   full CI (including the egress-enforcement boot test) gates the merge.
 #
 # Dependabot cannot do this job: it tracks only the GitHub Actions and the
-# Docker base image (see dependabot.yml). The Claude CLI is an `npm install -g`
+# Docker base image (see dependabot.yml). Agent CLIs are `npm install -g`
 # inside a RUN layer and Node/Python are curl'd tarballs — none of which
 # Dependabot parses.
 #
@@ -91,7 +91,7 @@ jobs:
             echo
             echo "### Review checklist"
             echo "- [ ] Version jumps look plausible (no surprise major bump)."
-            echo "- [ ] The claude binary SHA-256s changed **because the version changed** — a hash change at an unchanged version means the registry served different bytes and must be investigated, not merged."
+            echo "- [ ] Agent binary SHA-256s changed **because a version changed** — a hash change at an unchanged version means the registry served different bytes and must be investigated, not merged."
             echo "- [ ] CI is green, including the egress-enforcement boot test."
             echo
             echo "Cooldown is enforced by \`tool-pins.env\` (\`COOLDOWN_DAYS\`): releases younger than that are deliberately not selected."

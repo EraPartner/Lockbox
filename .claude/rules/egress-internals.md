@@ -12,7 +12,7 @@ paths:
 # Egress enforcement internals
 
 Mechanism detail for the canonical egress files. The non-negotiable rules that govern changing
-them live in `## Security invariants` in `CLAUDE.md` and apply whether or not this file is loaded.
+them live in `## Security invariants` in `AGENTS.md` and apply whether or not this file is loaded.
 
 ## How egress is enforced (the core model)
 
@@ -36,7 +36,7 @@ entrypoint on each start, **fail-closed**:
 
 Defense-in-depth on top: **safe-chain** (installed in `post-create`, wired via `BASH_ENV`) screens
 `npm`/`pip` installs against `malware-list.aikido.dev`, and a **launch-integrity gate**
-(`bin/verify-pins`) fingerprints `node npm claude gh git python3` at build and aborts the launch on
+(`bin/verify-pins`) fingerprints `node npm claude codex gh git python3` at build and aborts the launch on
 drift.
 
 ## Allowlist composition (base + overlay)
@@ -51,8 +51,8 @@ drift.
 To change egress: edit the base or an extra, run `./sync.sh`, then **rebuild** the affected
 container so the new allowlist is re-baked and re-read.
 
-**Baked vs bind-mounted — an important difference.** The image-baked launchers (`lockbox-claude`,
-the sibling projects) COPY the allowlist into the image, so an allowlist change needs a rebuild
+**Baked vs bind-mounted — an important difference.** The LockBox provider launchers and
+the sibling projects COPY the allowlist into the image, so an allowlist change needs a rebuild
 (`*_REBUILD=1`); reused/started containers are warned by `sandbox_warn_stale_allowlist`. The
 generic `sandbox/.devcontainer/bin/dev` instead **bind-mounts** its allowlist and does
 `squid -k reconfigure` on change — and reads a per-target overlay from the workspace only after

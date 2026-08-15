@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs once when the devcontainer is first created, as the `dev` user.
-# Installs JS deps, seeds the Claude config, and prepares git for signed commits.
+# Wires shared tooling and initializes provider-specific state.
 #
 # NOTE: all privileged setup (perms repair, egress proxy, firewall) happens in
 # the root ENTRYPOINT (/usr/local/sbin/lockbox-entrypoint) BEFORE this runs.
@@ -21,7 +21,7 @@ done
 # Supply-chain protection: safe-chain screens package installs against its malware
 # list (malware-list.aikido.dev, allowlisted in squid). `safe-chain setup` writes
 # shell wrappers; BASH_ENV (set at container run) sources them into every bash
-# session so npm/bun/pip installs Claude runs mid-session are screened.
+# session so npm/bun/pip installs an agent runs mid-session are screened.
 #
 # safe-chain is now BAKED INTO THE IMAGE at a reviewed pin (see ../tool-pins.env
 # and the Dockerfile). It used to be `npm install -g @aikidosec/safe-chain` right
@@ -40,7 +40,7 @@ fi
 
 # No JS dependency install: LockBox is bash/shell infra with no root package.json /
 # lockfile, so there is nothing to `npm ci`. safe-chain above still screens any
-# ad-hoc npm/pip installs Claude runs mid-session. The repo's own tooling (shellcheck,
+# ad-hoc npm/pip installs an agent runs mid-session. The repo's own tooling (shellcheck,
 # make, node for .claude/hooks/guard.mjs, python3 for plugin hooks) is baked into the
 # image, so no per-create install step is needed.
 
@@ -65,15 +65,16 @@ fi
 # enabledPlugins ARE propagated by design (user-enabled servers/plugins — see the
 # post-start KEEP note); the PreToolUse guard reaches the box out-of-band via the
 # root-owned managed-settings.json bind, not through this staged config.
+AGENT="${SANDBOX_AGENT:-claude}"
 STAGE=/home/dev/.claude-stage
-if [[ ! -f /home/dev/.claude/settings.json && -d "$STAGE/dot-claude" ]]; then
+if [[ "$AGENT" == claude && ! -f /home/dev/.claude/settings.json && -d "$STAGE/dot-claude" ]]; then
   echo "[post-create] Seeding ~/.claude from sanitized stage..."
   if ! rsync -a --ignore-errors "$STAGE/dot-claude/" /home/dev/.claude/; then
     echo "[post-create] WARN: ~/.claude rsync seed had errors (some files may be missing)." >&2
   fi
   echo "[post-create] Seeded $(find /home/dev/.claude -mindepth 1 -maxdepth 1 | wc -l) entries into ~/.claude."
 fi
-if [[ ! -f /home/dev/.claude.json && -f "$STAGE/claude.json" ]]; then
+if [[ "$AGENT" == claude && ! -f /home/dev/.claude.json && -f "$STAGE/claude.json" ]]; then
   cp "$STAGE/claude.json" /home/dev/.claude.json
   chmod 0600 /home/dev/.claude.json
 fi
@@ -81,4 +82,4 @@ fi
 
 echo "[post-create] Done."
 echo "[post-create] Lint:  shellcheck *.sh    ·    self-check:  ./sync.sh --check ; ./audit.sh"
-echo "[post-create] Start Claude with:  claude --dangerously-skip-permissions"
+echo "[post-create] Selected agent: $AGENT"

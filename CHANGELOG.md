@@ -8,10 +8,25 @@ every vendored copy, so a baked container self-identifies its egress-lock genera
 
 ## [Unreleased]
 
+### Added — provider-neutral in-repo sandboxes
+- Both in-repo images now bake a reviewed, version-pinned OpenAI Codex CLI beside
+  Claude Code. The Docker build verifies the selected per-architecture native
+  Codex payload SHA-256, and the launch-time manifest fingerprints `codex` too.
+- `.devcontainer/bin/codex` launches a separate LockBox container, while the
+  generic sandbox selects Codex with `DEV_SANDBOX_AGENT=codex`. Existing Claude
+  entry points and container names remain compatible.
+- Codex gets a private native `~/.codex` volume and official device-code login on
+  first interactive use. API-key and enterprise access-token login can bootstrap
+  from runtime environment variables. Host Codex config/auth is never mounted.
+- Minimal OpenAI API/auth hosts were added only to the two in-repo allowlist
+  overlays, avoiding a fleet-wide base-allowlist expansion. `AGENTS.md` now gives
+  Codex/ChatGPT the same security-critical repository guidance as Claude.
+
 ### Added — toolchain pinning + automated bumps
-- **`tool-pins.env`** — single source of truth for the baked toolchain
-  (claude-code, safe-chain, Node, Python) across **all nine managed devcontainers**,
-  in seven repos. Targets come from `paths.sh`, the same single source `sync.sh` and
+- **`tool-pins.env`** — single source of truth for the baked toolchain. Claude
+  Code, Node, and Python are tracked across **all nine managed devcontainers** in
+  seven repos; safe-chain and Codex are tracked where an image bakes them. Targets
+  come from `paths.sh`, the same single source `sync.sh` and
   `audit.sh` use, so onboarding a container stays a one-line edit in one file.
   Previously `NODE_VERSION`, `PY_VERSION`, `PY_RELEASE` and the claude version were
   hand-duplicated across all nine Dockerfiles with nothing asserting they matched —

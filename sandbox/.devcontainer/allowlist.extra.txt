@@ -14,6 +14,11 @@ docs.claude.com
 downloads.claude.ai
 statsig.anthropic.com
 
+# OpenAI Codex — API-key traffic plus ChatGPT/device-code authentication.
+api.openai.com
+auth.openai.com
+chatgpt.com
+
 # npm
 registry.npmjs.org
 

@@ -2,7 +2,7 @@
 
 One hardened container image, **any** project. Run `dev` from inside any
 directory and it routes *that* directory into an egress-locked sandbox and opens
-`claude` there — no per-project `.devcontainer` required. This is the full-dev
+Claude Code or OpenAI Codex there — no per-project `.devcontainer` required. This is the full-dev
 counterpart to the commit-only `git-agent`: same security model, but the
 workspace is **read-write** so you can edit and run code.
 
@@ -22,12 +22,13 @@ Postgres+Bun, Watchman) keep their own `.devcontainer`.
 cd ~/Code/scrim
 dev                       # claude, against the scrim repo, RW
 dev --version             # args forward to claude
+DEV_SANDBOX_AGENT=codex dev   # Codex with ChatGPT/device-code login
 DEV_SANDBOX_PORTS="8787" dev   # publish a container port to localhost
-DEV_SANDBOX_SHELL=1 dev        # bash shell instead of claude
+DEV_SANDBOX_SHELL=1 dev        # bash shell instead of the selected agent
 ```
 
-Each target directory gets its **own** container and private home volumes (keyed
-by a hash of its path), so projects never share Claude state.
+Each target directory and provider gets its **own** container and private agent
+volume (keyed by a hash of its path), so projects do not share agent state.
 
 ## What's mounted / forwarded
 
@@ -35,10 +36,11 @@ by a hash of its path), so projects never share Claude state.
 |---|---|---|
 | target dir → `/workspaces/project` | **RW** | full dev |
 | `.git` + `core.hooksPath` dir (e.g. `.githooks`) | RO | host-executed hooks — see Security model |
-| `~/.claude` (sanitized stage) | RO | seeded in; no host secrets |
-| PreToolUse guard + managed-settings | RO | un-disableable safety hook |
+| `~/.claude` (sanitized stage) | RO | Claude sessions only; seeded in with no host secrets |
+| `~/.codex` | private named volume | Codex config and runtime login cache; host config is not mounted |
+| PreToolUse guard + managed-settings | RO | Claude sessions only; un-disableable safety hook |
 | `~/.gitconfig` | RO | commit *identity* only |
-| Claude LLM token (Keychain) | env | `dev-sandbox-claude-code-token` |
+| Provider auth | runtime only | Claude token env, or Codex device/API login in its private volume |
 | git push token / ssh signing | **not forwarded** | push via `git-agent` |
 
 ## Egress
@@ -50,13 +52,14 @@ npm, PyPI, GitHub, Claude) + an optional **per-target overlay**:
 - drop a `.sandbox-allowlist.txt` (one host per line) in the target repo, or
 - reuse a target's existing `.devcontainer/allowlist.extra.txt`.
 
-Example — scrim talks to OpenAI upstream, so `~/Code/scrim/.sandbox-allowlist.txt`:
+Example — a project needs another provider, so `.sandbox-allowlist.txt` might contain:
 
 ```
-api.openai.com
+example-provider.invalid
 ```
 
-(`api.anthropic.com` is already in the base.)
+The generic sandbox already includes the minimal OpenAI Codex endpoints in its
+own overlay; they are deliberately not in the fleet-wide base.
 
 ## Security model
 
@@ -64,8 +67,8 @@ api.openai.com
   `--security-opt`; the VM boundary is the isolation control).
 - Root entrypoint locks egress (default-deny, proxy-UID-only) **before** the
   proxy starts; fail-closed. Dev sessions run unprivileged.
-- **Launch-integrity pins**: `node/npm/claude/gh/git/python3` are fingerprinted
-  at build; `bin/dev` aborts if any drift before opening claude. A real upgrade
+- **Launch-integrity pins**: `node/npm/claude/codex/gh/git/python3` are fingerprinted
+  at build; `bin/dev` aborts if any drift before opening an agent. A real upgrade
   trips this — rebuild to re-pin: `DEV_SANDBOX_REBUILD=1 dev`.
 - Workspace is RW and **no push credential** is present, so a compromised agent
   can alter local files but cannot push or exfiltrate beyond the allowlist.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Baked at /usr/local/share/dev-sandbox/post-create.sh (NOT read from the
 # workspace — the workspace is the mounted TARGET project). Runs once on create,
-# as `dev`. Seeds the Claude config and writes a minimal git config for identity.
+# as `dev`. Initializes provider config and a minimal git identity.
 
 set -euo pipefail
 
@@ -10,13 +10,14 @@ set -euo pipefail
 # proxy is already up by the time anything here touches the network.
 
 # --- Seed ~/.claude from the SANITIZED stage the host launcher produced --------
+AGENT="${SANDBOX_AGENT:-claude}"
 STAGE=/home/dev/.claude-stage
-if [[ ! -f /home/dev/.claude/settings.json && -d "$STAGE/dot-claude" ]]; then
+if [[ "$AGENT" == claude && ! -f /home/dev/.claude/settings.json && -d "$STAGE/dot-claude" ]]; then
   echo "[post-create] Seeding ~/.claude from sanitized stage..."
   rsync -a --ignore-errors "$STAGE/dot-claude/" /home/dev/.claude/ \
     || echo "[post-create] WARN: ~/.claude rsync seed had errors." >&2
 fi
-if [[ ! -f /home/dev/.claude.json && -f "$STAGE/claude.json" ]]; then
+if [[ "$AGENT" == claude && ! -f /home/dev/.claude.json && -f "$STAGE/claude.json" ]]; then
   cp "$STAGE/claude.json" /home/dev/.claude.json
   chmod 0600 /home/dev/.claude.json
 fi
@@ -25,7 +26,7 @@ fi
 # Screens package installs against the malware list (malware-list.aikido.dev,
 # allowlisted in squid). `safe-chain setup` writes shell wrappers; BASH_ENV (set
 # in bin/dev's `container run`) sources them into every bash session so npm/bun/pip
-# installs Claude runs mid-session are screened. Matches Vision/Watchman/Napoleon/
+# installs an agent runs mid-session are screened. Matches Vision/Watchman/Napoleon/
 # Brain — this box previously promised it (Dockerfile + doctor) but never installed
 # it, so installs here were NOT screened. (F12)
 #
@@ -67,3 +68,4 @@ echo "[post-create] Done. Generic full-dev sandbox:"
 echo "[post-create]   - workspace /workspaces/project is READ-WRITE"
 echo "[post-create]   - egress is locked to the allowlist (base + this project's overlay)"
 echo "[post-create]   - commit locally if you like; PUSH from the 'git-agent' sandbox"
+echo "[post-create]   - selected agent: $AGENT"

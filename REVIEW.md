@@ -2,16 +2,16 @@
 
 Run this before proposing or committing a change; it encodes LockBox's review
 knowledge as a checklist so review catches egress/isolation regressions
-automatically. See `CLAUDE.md` for the why behind each item.
+automatically. See `AGENTS.md` for the why behind each item.
 
 ## Secrets & safety
 - [ ] `./audit.sh` (or `make audit`) passes — no `sk-ant-`/`ghp_`/`github_pat_`/AWS/
       Slack/Stripe/npm/GitLab token value or `BEGIN … PRIVATE KEY` block in the index.
 - [ ] No private-key file added (`id_rsa`, `id_ed25519`, `*.key`, or a `*.pem` whose
       content is a private key — `audit.sh` gates `.pem` on content).
-- [ ] No credential baked into a script, Dockerfile, or launcher — creds are
-      forwarded at RUNTIME (Keychain → env at exec time), never written to a file.
-      (`.gitignore` only excludes `.DS_Store`; secrets are FORBIDDEN, not ignored.)
+- [ ] No credential baked into a script, Dockerfile, or launcher. Claude uses
+      runtime forwarding; Codex login state may exist only in its private native
+      volume. Host auth files are never mounted or copied into the image.
 - [ ] No `GH_TOKEN`/`GITHUB_TOKEN`/push credential introduced into any sandbox.
 
 ## Egress & sandbox invariants
@@ -30,7 +30,7 @@ automatically. See `CLAUDE.md` for the why behind each item.
       (`deny !CONNECT`) and HTTPS-only; metadata IP dropped at L3 and in squid.
 - [ ] Container privilege unchanged: non-root `dev`, no sudo, setuid/setgid stripped,
       `--cap-drop ALL` + only the six re-added caps; base image still `@sha256`-pinned;
-      Node/Python/Claude pins deliberate (rebuild re-pins `verify-pins`).
+      Node/Python/Claude/Codex pins deliberate (rebuild re-pins `verify-pins`).
 - [ ] Anti-tamper mounts preserved in launcher run args: `.devcontainer` RO overlay,
       `.git` RO, and any relocated `core.hooksPath` (`.githooks`) RO.
 

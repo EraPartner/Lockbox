@@ -6,16 +6,17 @@
 
 set -euo pipefail
 
+AGENT="${SANDBOX_AGENT:-claude}"
 STAGE=/home/dev/.claude-stage
 
 # Auto-pull the sanitized host Claude config into the container on every start.
 # Reads only from the RO stage; writes to the container's own volume.
-if [[ -d "$STAGE/dot-claude" && -d /home/dev/.claude ]]; then
+if [[ "$AGENT" == claude && -d "$STAGE/dot-claude" && -d /home/dev/.claude ]]; then
   rsync -a --update --ignore-errors "$STAGE/dot-claude/" /home/dev/.claude/ 2>/dev/null || true
 fi
 # Merge the staged ~/.claude.json into the container's (container values win on
 # key conflict, so host adds new keys without clobbering container edits).
-if [[ -f "$STAGE/claude.json" && -f /home/dev/.claude.json ]]; then
+if [[ "$AGENT" == claude && -f "$STAGE/claude.json" && -f /home/dev/.claude.json ]]; then
   tmp=$(mktemp)
   if jq -s '.[1] * .[0] | del(.installMethod, .autoUpdatesProtectedForNative)' /home/dev/.claude.json "$STAGE/claude.json" > "$tmp" 2>/dev/null \
      && [[ -s "$tmp" ]]; then
@@ -32,9 +33,11 @@ fi
 # them converges any volume to the intended set. plugins/, hooks, mcpServers,
 # statusline/ are intentionally KEPT (the user enabled them — see README
 # SECURITY NOTE). Background-task state stays out (not enabled, just noise).
-for p in scheduled-tasks tasks jobs daemon; do
-  rm -rf "/home/dev/.claude/$p" 2>/dev/null || true
-done
+if [[ "$AGENT" == claude ]]; then
+  for p in scheduled-tasks tasks jobs daemon; do
+    rm -rf "/home/dev/.claude/$p" 2>/dev/null || true
+  done
+fi
 
 # --- Project memory: seed from the host (RO) into the writable volume ----------
 # The host copy is bind-mounted RO at ~/.claude-memory-seed. Mirror it (--delete)
@@ -44,7 +47,7 @@ done
 # back to the host by bin/claude on exit. Matches Brain's pattern. (F10/F27)
 MEM_SEED=/home/dev/.claude-memory-seed
 MEM_DIR=/home/dev/.claude/projects/-workspaces-LockBox/memory
-if [[ -d "$MEM_SEED" ]]; then
+if [[ "$AGENT" == claude && -d "$MEM_SEED" ]]; then
   mkdir -p "$MEM_DIR"
   rsync -a --delete --ignore-errors "$MEM_SEED/" "$MEM_DIR/" 2>/dev/null || true
 fi
@@ -57,10 +60,10 @@ if [[ ! -f /run/egress-firewall-ok ]]; then
   cat >&2 <<'EOF'
 [post-start] ✖✖ EGRESS FIREWALL NOT VERIFIED (/run/egress-firewall-ok missing).
 [post-start]     The egress lock did not confirm. Check `container logs` for the
-[post-start]     [firewall] error, then restart the container. Do NOT run
-[post-start]     --dangerously-skip-permissions until this is resolved.
+[post-start]     [firewall] error, then restart the container. Do not bypass
+[post-start]     agent permissions until this is resolved.
 EOF
   exit 1
 fi
 
-echo "[post-start] Ready. Edit LockBox; lint with shellcheck, then ./sync.sh --check."
+echo "[post-start] Ready for $AGENT. Edit LockBox; lint with shellcheck, then ./sync.sh --check."

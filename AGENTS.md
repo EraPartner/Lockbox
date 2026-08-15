@@ -1,4 +1,4 @@
-# CLAUDE.md — LockBox
+# AGENTS.md — LockBox
 
 Agent guide and single source of truth for working in this repo. **This is
 security-critical infrastructure**: the files here are vendored into every
@@ -9,8 +9,9 @@ before proposing or committing a change.
 
 LockBox is the **canonical devcontainer egress lock + shared launcher helpers**
 for a fleet of hardened, egress-locked coding-agent sandboxes (Vision, Watchman,
-Brain, Napoleon-relay, git-agent, dotfiles, VaultLens, and a generic dev box).
-The two in-repo images support both Claude Code and OpenAI Codex. It is
+Brain, Napoleon-relay, git-agent, dotfiles, VaultLens, and a generic dev box). The
+two in-repo images support both Claude Code and OpenAI Codex; sibling images may
+remain provider-specific until they adopt the same CLI block. It is
 bash/shell + container infra — **no `package.json`, no build step, no app**. You
 edit shell scripts and container/proxy config, lint with `shellcheck`, and
 self-check with `./sync.sh --check` + `./audit.sh`.
@@ -64,9 +65,10 @@ Defense-in-depth on top: **safe-chain** screens `npm`/`pip` installs against
 `malware-list.aikido.dev`, and the **launch-integrity gate** (`bin/verify-pins`) aborts the launch
 on toolchain drift.
 
-Full mechanism — sentinel verification, IPv6 and cloud-metadata handling, ECH, squid supervision,
-allowlist composition, baked vs bind-mounted — loads path-scoped from
-`.claude/rules/egress-internals.md` when touching those files.
+Full mechanism — sentinel verification, IPv6 and cloud-metadata handling, ECH,
+squid supervision, allowlist composition, baked vs bind-mounted — is documented
+in `.claude/rules/egress-internals.md`. Codex/ChatGPT agents must read it directly
+when touching those files; Claude loads it through its path-scoped rule.
 
 ## Allowlist model (base + overlay)
 
@@ -111,13 +113,13 @@ The in-repo entry points are:
 
 - `.devcontainer/bin/claude` and `.devcontainer/bin/codex` edit LockBox itself.
   They use separate containers and private provider config volumes, but share the
-  same hardened image and pin gate.
+  same image, egress policy, lifecycle, read-only git mounts, and pin gate.
 - `sandbox/.devcontainer/bin/dev` targets the current repository. Claude remains
   the compatibility default; set `DEV_SANDBOX_AGENT=codex` for Codex.
-- Claude keeps its sanitized staging and runtime Keychain token flow. Codex uses
-  a private `~/.codex` volume and official device-code login on first use.
-- Sibling projects keep their existing provider-specific launchers while sharing
-  the canonical egress helpers.
+- Claude credentials are forwarded at runtime. Codex uses its private `~/.codex`
+  volume and starts official device-code login on first interactive use; an
+  `OPENAI_API_KEY` or enterprise `CODEX_ACCESS_TOKEN` can bootstrap login instead.
+- Sibling projects keep their existing launchers and vendored egress helpers.
 
 ## Adding / modifying a sandbox
 

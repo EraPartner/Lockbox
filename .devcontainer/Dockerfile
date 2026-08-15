@@ -91,9 +91,8 @@ RUN set -eux; \
 # python-build-standalone bakes CC=clang into sysconfig; this image has gcc (via
 # build-essential), not clang. Pin CC=gcc so any source C-extension build works.
 ENV CC=gcc CXX=g++
-# Build-time global prefix for the agent CLI (claude). Kept ROOT-owned (see the
-# claude install below) so the unprivileged dev user can't overwrite the pinned
-# claude/npm binaries post-launch (the verify-pins gate fingerprints these paths).
+# Build-time global prefix for the agent CLIs. Kept ROOT-owned so the
+# unprivileged dev user cannot overwrite the pinned binaries after launch.
 # Use the ENV var, NOT /etc/npmrc: npm's real "global" config is $PREFIX/etc/npmrc,
 # so a plain /etc/npmrc is ignored. Runtime `npm i -g` (safe-chain) uses a SEPARATE
 # dev-owned prefix, /home/dev/.npm-global, set after the install. Root prefix is
@@ -142,6 +141,21 @@ RUN set -eux; \
     test "$got2" = "$want" || exit 1; \
     claude --version
 
+# --- OpenAI Codex CLI (native payload hash-pinned per architecture) ----------
+ARG CODEX_VERSION=0.147.0
+ARG CODEX_SHA256_ARM64=e23d0be344d2496986c985cd3db61e6f649b1ddd900e6afc1b5aaabbffcbb4e2
+ARG CODEX_SHA256_AMD64=cb0a15567e9a60a5820d54b0f6ae86d504dc3805c1eab21a47f70e3eb7b73a40
+RUN set -eux; \
+    npm install -g --no-fund --no-audit "@openai/codex@${CODEX_VERSION}"; \
+    case "$(dpkg --print-architecture)" in arm64) target=aarch64-unknown-linux-musl; want="${CODEX_SHA256_ARM64}" ;; amd64) target=x86_64-unknown-linux-musl; want="${CODEX_SHA256_AMD64}" ;; *) exit 1 ;; esac; \
+    root="$(npm root -g)/@openai/codex"; \
+    payload="$(find "$root/node_modules" -type f -path "*/vendor/${target}/bin/codex" | head -1)"; \
+    test -n "$payload"; \
+    got="$(sha256sum "$payload" | awk '{print $1}')"; \
+    echo "codex pin: want=$want got=$got"; \
+    test "$want" = "$got"; \
+    codex --version
+
 # --- safe-chain (supply-chain screening for ad-hoc installs) ------------------
 # BAKED, not installed at runtime: post-create.sh used to `npm i -g` this unpinned
 # inside the security boundary, BEFORE it could screen anything. LIMIT: its 8
@@ -188,7 +202,7 @@ RUN mkdir -p /etc/squid/certs /var/lib/squid /var/log/squid /var/spool/squid \
   && chown -R proxy:proxy /etc/squid/certs /var/lib/squid /var/log/squid /var/spool/squid
 
 # Pre-create dirs backed by named volumes so a fresh volume inherits dev ownership.
-RUN install -d -o dev -g dev -m 0700 /home/dev/.claude \
+RUN install -d -o dev -g dev -m 0700 /home/dev/.claude /home/dev/.codex \
  && install -d -o dev -g dev -m 0755 /home/dev/.config /home/dev/.config/gh
 
 # Pin the agent's executables: record SHA-256 so lockbox-verify-pins can
@@ -197,7 +211,7 @@ RUN set -eux; \
     pinfile=/usr/local/share/lockbox/binary-pins.txt; \
     mkdir -p /usr/local/share/lockbox; \
     : > "$pinfile"; \
-    for b in node npm claude gh git python3 safe-chain; do \
+    for b in node npm claude codex gh git python3 safe-chain; do \
       p="$(command -v "$b")"; \
       h="$(sha256sum "$p" | awk '{print $1}')"; \
       printf '%s\t%s\t%s\n' "$b" "$p" "$h" >> "$pinfile"; \
