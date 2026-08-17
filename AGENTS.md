@@ -202,3 +202,10 @@ changes; bump `VERSION` + re-`sync.sh` + tag when releasing.
 guard exists) → ask the user rather than weaken an invariant. If a change would
 widen egress, add a capability, or relax a mount, surface it explicitly and let the
 user decide — do not route around it.
+
+## Cloud sessions
+
+Run `bash .codex/cloud/setup.sh` as the Codex cloud environment setup command. Cloud sessions may
+edit source and run portable static checks, but they cannot validate Apple Container runtime,
+Secure Enclave signing, host mounts, or macOS firewall behavior. Never report those host-only
+checks as passed from a cloud session.
