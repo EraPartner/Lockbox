@@ -3,8 +3,8 @@
 **Canonical devcontainer egress lock + shared launcher helpers for the sandbox fleet.**
 
 The two sandboxes in this repository support both Claude Code and OpenAI Codex.
-Claude remains the compatibility default; provider selection does not change the
-firewall, proxy, read-only git mounts, or launch-integrity checks.
+Provider selection is explicit; it does not change the firewall, proxy, read-only
+git mounts, or launch-integrity checks.
 
 Single source of truth for the egress firewall, the SNI-allowlist proxy, and the
 host-side launcher helpers used by the Vision, Watchman, Brain, Napoleon-relay,
@@ -97,11 +97,16 @@ For LockBox itself, run `.devcontainer/bin/claude` or
 `.devcontainer/bin/codex`. For the generic sandbox, use:
 
 ```sh
-sandbox/.devcontainer/bin/dev                    # Claude compatibility default
-DEV_SANDBOX_AGENT=codex sandbox/.devcontainer/bin/dev
+sandbox/.devcontainer/bin/dev-claude             # explicit Claude selection
+sandbox/.devcontainer/bin/dev-codex              # explicit Codex selection
+DEV_SANDBOX_AGENT=codex sandbox/.devcontainer/bin/dev  # environment-based selection
 ```
 
-The image bakes both CLIs. Each provider gets a separate container and private
+The provider-specific entry points call a shared provider-neutral launcher. Each
+launch prints the selected provider and refuses to reuse a container whose saved
+`SANDBOX_AGENT` does not match. The image still bakes both CLIs because both are
+covered by the same reviewed pin and integrity checks; an installed CLI is not the
+selected provider. Each provider gets a separate container and private
 config volume. Claude keeps the existing sanitized config staging and runtime
 Keychain token flow. Codex never mounts host `~/.codex`; on first interactive
 launch it starts device-code login for ChatGPT subscription access. If
@@ -167,7 +172,7 @@ no `compose.yaml` files (the old Docker Compose configs are archived under
 # rebuild the affected container so the baked copies update — force-recreate via
 # the launcher's REBUILD env (each launcher rebuilds its own image, cached/fast):
 #   NAPOLEON_REBUILD=1 napoleon-claude   ·   WATCHMAN_REBUILD=1 watchman-claude
-#   DEV_SANDBOX_REBUILD=1 dev            ·   GIT_AGENT_REBUILD=1 git-agent
+#   DEV_SANDBOX_REBUILD=1 dev-codex      ·   GIT_AGENT_REBUILD=1 git-agent
 #   VISION_REBUILD=1 vision-claude       ·   BRAIN_REBUILD=1 brain-claude
 # or directly:  container build -t <image> <project>/.devcontainer
 

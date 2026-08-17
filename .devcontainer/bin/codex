@@ -2,4 +2,4 @@
 # Codex entry point for the shared LockBox sandbox launcher.
 set -euo pipefail
 export LOCKBOX_AGENT=codex
-exec "$(cd "$(dirname "$0")" && pwd -P)/claude" "$@"
+exec "$(cd "$(dirname "$0")" && pwd -P)/agent" "$@"

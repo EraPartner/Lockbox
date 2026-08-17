@@ -12,6 +12,14 @@ pass=0; warn=0; fail=0
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; pass=$((pass+1)); }
 note() { printf '  \033[33m!\033[0m %s\n' "$*"; warn=$((warn+1)); }
 bad()  { printf '  \033[31m✗\033[0m %s\n' "$*"; fail=$((fail+1)); }
+AGENT="${SANDBOX_AGENT:-}"
+case "$AGENT" in
+  claude|codex) ;;
+  *) bad "selected provider is invalid or unset (SANDBOX_AGENT='${AGENT:-unset}')"; exit 1 ;;
+esac
+
+echo "== Selected provider =="
+ok "$AGENT"
 
 echo "== Workspace =="
 if ( : > "$WS/.doctor.$$" ) 2>/dev/null; then rm -f "$WS/.doctor.$$"; ok "workspace is writable (full dev)"; else bad "workspace is NOT writable"; fi
@@ -19,7 +27,7 @@ git -C "$WS" rev-parse --short HEAD >/dev/null 2>&1 && ok "git read ops work (HE
 
 echo "== Toolchain =="
 for b in node npm claude codex gh git python3; do
-  command -v "$b" >/dev/null 2>&1 && ok "$b present ($("$b" --version 2>/dev/null | head -1))" || bad "$b missing"
+  command -v "$b" >/dev/null 2>&1 && ok "installed CLI/tool: $b ($("$b" --version 2>/dev/null | head -1))" || bad "$b missing"
 done
 
 echo "== Launch integrity (pinned binaries) =="
@@ -39,7 +47,7 @@ echo "== Egress lock (allowlist-enforced) =="
 [[ -f /run/egress-firewall-ok ]] && ok "firewall sentinel present" || bad "firewall sentinel missing (/run/egress-firewall-ok)"
 pgrep -x squid >/dev/null 2>&1 && ok "squid running" || bad "squid not running"
 (exec 3<>/dev/tcp/127.0.0.1/3128) 2>/dev/null && ok "proxy listening on 127.0.0.1:3128" || bad "proxy not listening on :3128"
-if [[ "${SANDBOX_AGENT:-claude}" == codex ]]; then provider_host=api.openai.com; else provider_host=api.anthropic.com; fi
+if [[ "$AGENT" == codex ]]; then provider_host=api.openai.com; else provider_host=api.anthropic.com; fi
 provider_code="$(curl -sS --max-time 12 -o /dev/null -w '%{http_code}' "https://$provider_host/" 2>/dev/null || true)"
 # curl prints 000 on a connect/proxy failure. The old `grep '^[0-9]'` matched 000
 # too, so this check could NEVER fail. Require a real HTTP status (1xx–5xx); any
@@ -55,7 +63,7 @@ else ok "denied host blocked (example.com)"; fi
 echo "  (effective allowlist: $(grep -cvE '^\s*#|^\s*$' /etc/squid/allowlist.txt 2>/dev/null || echo '?') hosts)"
 
 echo "== LLM credentials =="
-if [[ "${SANDBOX_AGENT:-claude}" == codex ]]; then
+if [[ "$AGENT" == codex ]]; then
   if codex login status >/dev/null 2>&1; then ok "Codex login cache is valid"; else bad "Codex is not logged in"; fi
 elif [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}${ANTHROPIC_API_KEY:-}${ANTHROPIC_AUTH_TOKEN:-}" ]]; then
   ok "Claude token in env"

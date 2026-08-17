@@ -5,19 +5,24 @@
 # target gets its own container + private home volumes, mounts it READ-WRITE, and
 # opens Claude Code or Codex inside the hardened image. apple/container only.
 #
-#   dev                 # run claude against $PWD's project
-#   dev --version       # forward any args to claude
-#   DEV_SANDBOX_PORTS="8787 3000" dev   # publish container ports to the host
-#   DEV_SANDBOX_SHELL=1 dev             # open a bash shell instead of claude
-#   DEV_SANDBOX_AGENT=codex dev          # use Codex (default: claude)
-#   DEV_SANDBOX_REBUILD=1 dev           # force image+container refresh
+#   dev-claude          # explicitly run Claude against $PWD's project
+#   dev-codex           # explicitly run Codex against $PWD's project
+#   DEV_SANDBOX_AGENT=codex dev --version  # forward args to selected agent
+#   DEV_SANDBOX_PORTS="8787 3000" dev-codex  # publish ports for selected provider
+#   DEV_SANDBOX_SHELL=1 dev-codex       # open a shell with Codex's container state
+#   DEV_SANDBOX_REBUILD=1 dev-codex     # force image+container refresh
 #
 # Per-target egress overlay: if the target has .sandbox-allowlist.txt (or
 # .devcontainer/allowlist.extra.txt), its hosts are added on top of the base.
 set -euo pipefail
 
-AGENT="${DEV_SANDBOX_AGENT:-claude}"
-case "$AGENT" in claude|codex) ;; *) echo "dev: unsupported agent '$AGENT' (use claude or codex)" >&2; exit 2 ;; esac
+AGENT="${DEV_SANDBOX_AGENT:-}"
+case "$AGENT" in
+  claude|codex) ;;
+  "") echo "dev: no provider selected; use dev-claude, dev-codex, or set DEV_SANDBOX_AGENT" >&2; exit 2 ;;
+  *) echo "dev: unsupported agent '$AGENT' (use claude or codex)" >&2; exit 2 ;;
+esac
+echo "dev: selected provider '$AGENT'." >&2
 
 # --- 0) Resolve target dir (git repo root, else CWD) -------------------------
 TARGET="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || true)"
@@ -38,6 +43,7 @@ esac
 
 HOST_PWD="$(pwd -P)"
 DC="$(cd "$(dirname "$0")/.." && pwd -P)"
+LAUNCHER="$DC/bin/dev-$AGENT"
 
 command -v container >/dev/null 2>&1 || { echo "dev: apple/container not installed." >&2; exit 1; }
 container system status >/dev/null 2>&1 || { echo "dev: container system not started — run: container system start" >&2; exit 1; }
@@ -146,7 +152,7 @@ if [[ "${DEV_SANDBOX_REBUILD:-0}" == 1 ]]; then
   container rm -f "$NAME" >/dev/null 2>&1 || true
 fi
 PORTS_CHANGED_MSG="dev: WARN: DEV_SANDBOX_PORTS changed, but the -p bindings and the firewall's
-     inbound-ports are fixed at CREATE — rebuild to apply: DEV_SANDBOX_REBUILD=1 $0"
+     inbound-ports are fixed at CREATE — rebuild to apply: DEV_SANDBOX_REBUILD=1 $LAUNCHER"
 if container ls -q 2>/dev/null | grep -qx "$NAME"; then
   # Reuse RUNNING. squid loaded its ACLs at config parse; the bind-mounted
   # allowlist is already live in-container but won't take effect until squid
@@ -155,7 +161,7 @@ if container ls -q 2>/dev/null | grep -qx "$NAME"; then
   if (( ALLOWLIST_CHANGED )); then
     echo "dev: egress allowlist changed — reloading squid in the running container..." >&2
     container exec "$NAME" squid -k reconfigure 2>/dev/null \
-      || echo "dev: WARN: squid reconfigure failed; apply the new allowlist with DEV_SANDBOX_REBUILD=1 $0" >&2
+      || echo "dev: WARN: squid reconfigure failed; apply the new allowlist with DEV_SANDBOX_REBUILD=1 $LAUNCHER" >&2
   fi
   [[ "$OLD_INBOUND" != "$NEW_INBOUND" ]] && echo "$PORTS_CHANGED_MSG" >&2
 elif container ls -aq 2>/dev/null | grep -qx "$NAME"; then
@@ -229,6 +235,16 @@ CID="$NAME"
 if [[ "$AGENT" == claude ]]; then AUTOSYNC="${DEV_SANDBOX_AUTOSYNC:-0}"; else AUTOSYNC=0; fi
 sandbox_install_autosync_trap "dev" "$CID" "$AUTOSYNC" "${DEV_SANDBOX_STOP_ON_EXIT:-1}"
 
+# SANDBOX_AGENT is fixed at container creation. Detect stale/manual containers
+# before lifecycle hooks use the wrong provider configuration or diagnostics.
+# The cleanup trap is already installed so this abort cannot orphan the VM.
+CONTAINER_AGENT="$(container exec "$NAME" printenv SANDBOX_AGENT 2>/dev/null || true)"
+if [[ "$CONTAINER_AGENT" != "$AGENT" ]]; then
+  echo "dev: ABORT — container '$NAME' has stale provider state '${CONTAINER_AGENT:-unset}'." >&2
+  echo "     Recreate it with: DEV_SANDBOX_REBUILD=1 $LAUNCHER" >&2
+  exit 1
+fi
+
 # --- 6) Wait for the egress proxy, then replay lifecycle as dev ---------------
 # (post-create once, post-start every start). The proxy-wait (entrypoint applies
 # firewall → squid) runs at the TOP of this exec rather than as its own
@@ -257,7 +273,7 @@ if [[ "$AGENT" == claude ]]; then sandbox_forward_llm_creds "dev-sandbox-claude-
 # /usr/local/bin (root-owned, not dev-writable).
 if ! container exec --user dev -e BASH_ENV= "$NAME" /usr/local/bin/dev-sandbox-verify-pins --quiet; then
   echo "dev: ABORT — binary fingerprint drift in the sandbox (see above)." >&2
-  echo "  If you intentionally upgraded a tool, rebuild to re-pin: DEV_SANDBOX_REBUILD=1 $0" >&2
+  echo "  If you intentionally upgraded a tool, rebuild to re-pin: DEV_SANDBOX_REBUILD=1 $LAUNCHER" >&2
   exit 1
 fi
 

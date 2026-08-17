@@ -8,6 +8,14 @@
 
 set -euo pipefail
 cd /workspaces/LockBox
+AGENT="${SANDBOX_AGENT:-}"
+case "$AGENT" in
+  claude|codex) ;;
+  *)
+    echo "[post-create] ABORT: SANDBOX_AGENT is '${AGENT:-unset}'; recreate with the selected provider launcher." >&2
+    exit 1
+    ;;
+esac
 
 # Wait for the egress proxy (started by the root entrypoint) before any network
 # install — postCreate can race the entrypoint's proxy startup, and with egress
@@ -65,7 +73,6 @@ fi
 # enabledPlugins ARE propagated by design (user-enabled servers/plugins — see the
 # post-start KEEP note); the PreToolUse guard reaches the box out-of-band via the
 # root-owned managed-settings.json bind, not through this staged config.
-AGENT="${SANDBOX_AGENT:-claude}"
 STAGE=/home/dev/.claude-stage
 if [[ "$AGENT" == claude && ! -f /home/dev/.claude/settings.json && -d "$STAGE/dot-claude" ]]; then
   echo "[post-create] Seeding ~/.claude from sanitized stage..."

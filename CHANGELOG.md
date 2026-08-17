@@ -8,13 +8,23 @@ every vendored copy, so a baked container self-identifies its egress-lock genera
 
 ## [Unreleased]
 
+### Changed — explicit provider selection
+- LockBox's Claude and Codex entry points now call a shared provider-neutral
+  `bin/agent` implementation. The generic sandbox also provides explicit
+  `dev-claude` and `dev-codex` entry points. Plain `dev` now requires
+  `DEV_SANDBOX_AGENT` instead of silently defaulting to Claude.
+- Launchers now print the selected provider and reject a reused container whose
+  creation-time `SANDBOX_AGENT` is missing or mismatched. Lifecycle and doctor
+  checks no longer silently interpret missing provider state as Claude, and
+  diagnostics distinguish the selected provider from the two installed CLIs.
+
 ### Added — provider-neutral in-repo sandboxes
 - Both in-repo images now bake a reviewed, version-pinned OpenAI Codex CLI beside
   Claude Code. The Docker build verifies the selected per-architecture native
   Codex payload SHA-256, and the launch-time manifest fingerprints `codex` too.
 - `.devcontainer/bin/codex` launches a separate LockBox container, while the
-  generic sandbox selects Codex with `DEV_SANDBOX_AGENT=codex`. Existing Claude
-  entry points and container names remain compatible.
+  generic sandbox selects Codex with `DEV_SANDBOX_AGENT=codex`. Provider-specific
+  container names remain compatible.
 - Codex gets a private native `~/.codex` volume and official device-code login on
   first interactive use. API-key and enterprise access-token login can bootstrap
   from runtime environment variables. Host Codex config/auth is never mounted.

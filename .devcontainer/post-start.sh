@@ -6,7 +6,14 @@
 
 set -euo pipefail
 
-AGENT="${SANDBOX_AGENT:-claude}"
+AGENT="${SANDBOX_AGENT:-}"
+case "$AGENT" in
+  claude|codex) ;;
+  *)
+    echo "[post-start] ABORT: SANDBOX_AGENT is '${AGENT:-unset}'; recreate with the selected provider launcher." >&2
+    exit 1
+    ;;
+esac
 STAGE=/home/dev/.claude-stage
 
 # Auto-pull the sanitized host Claude config into the container on every start.

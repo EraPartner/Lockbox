@@ -33,15 +33,17 @@ no devcontainer CLI / Dev Containers extension; there is no `compose.yaml` and n
 `devcontainer.json`. Prerequisite: `container` installed and the system VM started
 (`container system start`).
 
-The host launchers `.devcontainer/bin/claude` and `.devcontainer/bin/codex`
-forward invocations into provider-specific containers that share one image. The
+The host entry points `.devcontainer/bin/claude` and `.devcontainer/bin/codex`
+select a provider and call the shared `.devcontainer/bin/agent` implementation.
+It forwards invocations into provider-specific containers that share one image. The
 Claude path stages a sanitized `~/.claude`; Codex uses a separate private volume.
 Both run an idempotent `container build`, then:
 
 - `container run` (reusing a running container, starting a stopped one, else
   creating it), replays the post-create (once) / post-start (every start) lifecycle
   as `dev`, and runs the same launch-integrity gate. The Claude path additionally
-  forwards its token from Keychain.
+  forwards its token from Keychain. Reuse fails with a rebuild instruction if the
+  container's saved provider does not match the selected entry point.
 
 The fish function `lockbox-claude` (in `~/.config/fish/functions/`) walks up from
 `$PWD` to the repo (matching `.devcontainer/Dockerfile`), falls back to
@@ -359,7 +361,7 @@ flags only for trusted repositories.
 read-write at `/workspaces/LockBox` so the agent can edit source — but that
 same mount would otherwise expose the sandbox's own definition
 (`Dockerfile`, the launcher run args) and the **host-side launcher**
-(`bin/claude`, `bin/codex`, `bin/doctor`), which run on your **Mac** with your shell and
+(`bin/agent`, `bin/claude`, `bin/codex`, `bin/doctor`), which run on your **Mac** with your shell and
 Keychain. A compromised in-container agent could edit a launcher or the
 `Dockerfile`, and the next invocation (which calls `container build`
 and re-execs the launcher) would run it on the host — a trivial full escape.

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Explicit Codex entry point for the generic development sandbox.
+set -euo pipefail
+export DEV_SANDBOX_AGENT=codex
+exec "$(cd "$(dirname "$0")" && pwd -P)/dev" "$@"

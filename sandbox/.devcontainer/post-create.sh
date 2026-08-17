@@ -4,13 +4,20 @@
 # as `dev`. Initializes provider config and a minimal git identity.
 
 set -euo pipefail
+AGENT="${SANDBOX_AGENT:-}"
+case "$AGENT" in
+  claude|codex) ;;
+  *)
+    echo "[post-create] ABORT: SANDBOX_AGENT is '${AGENT:-unset}'; recreate with DEV_SANDBOX_REBUILD=1." >&2
+    exit 1
+    ;;
+esac
 
 # The egress-proxy barrier lives in the launcher (bin/dev step 6): it polls
 # 127.0.0.1:3128 in the SAME shell immediately before invoking this script, so the
 # proxy is already up by the time anything here touches the network.
 
 # --- Seed ~/.claude from the SANITIZED stage the host launcher produced --------
-AGENT="${SANDBOX_AGENT:-claude}"
 STAGE=/home/dev/.claude-stage
 if [[ "$AGENT" == claude && ! -f /home/dev/.claude/settings.json && -d "$STAGE/dot-claude" ]]; then
   echo "[post-create] Seeding ~/.claude from sanitized stage..."

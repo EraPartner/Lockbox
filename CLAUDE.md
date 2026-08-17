@@ -110,10 +110,12 @@ is re-baked and re-read.
 The in-repo entry points are:
 
 - `.devcontainer/bin/claude` and `.devcontainer/bin/codex` edit LockBox itself.
-  They use separate containers and private provider config volumes, but share the
-  same hardened image and pin gate.
-- `sandbox/.devcontainer/bin/dev` targets the current repository. Claude remains
-  the compatibility default; set `DEV_SANDBOX_AGENT=codex` for Codex.
+  They select the provider and call `.devcontainer/bin/agent`. Providers use
+  separate containers and private config volumes, but share the same hardened
+  image and pin gate.
+- `sandbox/.devcontainer/bin/dev-claude` and `bin/dev-codex` target the current
+  repository. Plain `bin/dev` requires `DEV_SANDBOX_AGENT`; it has no provider
+  default.
 - Claude keeps its sanitized staging and runtime Keychain token flow. Codex uses
   a private `~/.codex` volume and official device-code login on first use.
 - Sibling projects keep their existing provider-specific launchers while sharing
@@ -178,6 +180,7 @@ runs: `shell` (bash -n + shellcheck), `secrets` (audit.sh), `secrets-scan`
 | `Makefile` | `setup` `sync` `check` `audit` `test` |
 | `test/egress-smoke.sh` | Boot-and-assert the egress lock enforces |
 | `.devcontainer/` | Sandbox for editing LockBox itself (Claude or Codex) |
+| `.devcontainer/bin/agent` | Shared provider-neutral launcher implementation; use the Claude/Codex entry points |
 | `sandbox/.devcontainer/` | Generic full-dev sandbox (`bin/dev`, selected by `DEV_SANDBOX_AGENT`) |
 | `.devcontainer/Dockerfile` | Hardened image (debian-slim @sha256, non-root `dev`, pinned Node/Python/Claude/Codex) |
 | `.devcontainer/entrypoint.sh` | Root privileged setup: perms → LOCK EGRESS → start squid → keep-alive |

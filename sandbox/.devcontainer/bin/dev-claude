@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Explicit Claude entry point for the generic development sandbox.
+set -euo pipefail
+export DEV_SANDBOX_AGENT=claude
+exec "$(cd "$(dirname "$0")" && pwd -P)/dev" "$@"

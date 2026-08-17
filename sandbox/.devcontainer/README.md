@@ -1,6 +1,6 @@
 # Generic universal full-dev sandbox
 
-One hardened container image, **any** project. Run `dev` from inside any
+One hardened container image, **any** project. Run `dev-claude` or `dev-codex` from inside any
 directory and it routes *that* directory into an egress-locked sandbox and opens
 Claude Code or OpenAI Codex there — no per-project `.devcontainer` required. This is the full-dev
 counterpart to the commit-only `git-agent`: same security model, but the
@@ -13,22 +13,29 @@ Postgres+Bun, Watchman) keep their own `.devcontainer`.
 > **Not a VS Code devcontainer.** Despite living under `.devcontainer/`, there is
 > **no** `devcontainer.json` here — this is an Apple `container` (`container build`
 > + `container run`) image built and driven entirely by `bin/dev`. VS Code
-> "Reopen in Container" is not supported; `bin/dev` (invoked as `dev`) is the only
-> entry point.
+> "Reopen in Container" is not supported; the `bin/dev-claude` and `bin/dev-codex`
+> wrappers select a provider and invoke the shared `bin/dev` implementation.
 
 ## Usage
 
 ```sh
 cd ~/Code/scrim
-dev                       # claude, against the scrim repo, RW
-dev --version             # args forward to claude
-DEV_SANDBOX_AGENT=codex dev   # Codex with ChatGPT/device-code login
-DEV_SANDBOX_PORTS="8787" dev   # publish a container port to localhost
-DEV_SANDBOX_SHELL=1 dev        # bash shell instead of the selected agent
+dev-claude                    # Claude, against the scrim repo, RW
+dev-codex                     # Codex with ChatGPT/device-code login
+dev-codex --version           # args forward to Codex
+DEV_SANDBOX_AGENT=codex dev   # equivalent environment-based selection
+DEV_SANDBOX_PORTS="8787" dev-codex   # publish a container port to localhost
+DEV_SANDBOX_SHELL=1 dev-codex        # bash shell with Codex's container state
 ```
 
 Each target directory and provider gets its **own** container and private agent
-volume (keyed by a hash of its path), so projects do not share agent state.
+volume (keyed by a hash of its path), so projects do not share agent state. The
+launcher prints the selected provider and refuses stale containers whose saved
+provider does not match. Both CLIs remain installed and integrity-checked; that
+does not make both providers active in one session.
+
+Plain `dev` without `DEV_SANDBOX_AGENT` fails with selection instructions. It
+does not guess from the calling terminal or silently default to one provider.
 
 ## What's mounted / forwarded
 
@@ -69,7 +76,8 @@ own overlay; they are deliberately not in the fleet-wide base.
   proxy starts; fail-closed. Dev sessions run unprivileged.
 - **Launch-integrity pins**: `node/npm/claude/codex/gh/git/python3` are fingerprinted
   at build; `bin/dev` aborts if any drift before opening an agent. A real upgrade
-  trips this — rebuild to re-pin: `DEV_SANDBOX_REBUILD=1 dev`.
+  trips this — rebuild to re-pin with the selected provider, for example:
+  `DEV_SANDBOX_REBUILD=1 dev-codex`.
 - Workspace is RW and **no push credential** is present, so a compromised agent
   can alter local files but cannot push or exfiltrate beyond the allowlist.
 - **Host-executed git paths are locked RO.** Git hooks run on your *Mac* (you
