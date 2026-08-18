@@ -292,22 +292,9 @@ else
 fi
 TTY_FLAGS=()
 [[ -t 0 && -t 1 ]] && TTY_FLAGS=(-i -t)
-if [[ "$AGENT" == codex && -z "${DEV_SANDBOX_SHELL:-}" ]] \
-   && ! container exec --user dev "$NAME" codex login status >/dev/null 2>&1; then
-  if [[ -n "${OPENAI_API_KEY:-}" ]]; then
-    container exec -i --user dev -e OPENAI_API_KEY "$NAME" \
-      bash -c 'printenv OPENAI_API_KEY | codex login --with-api-key'
-  elif [[ -n "${CODEX_ACCESS_TOKEN:-}" ]]; then
-    container exec -i --user dev -e CODEX_ACCESS_TOKEN "$NAME" \
-      bash -c 'printenv CODEX_ACCESS_TOKEN | codex login --with-access-token'
-  elif (( ${#TTY_FLAGS[@]} > 0 )); then
-    echo "dev: no cached Codex login; starting ChatGPT device-code login." >&2
-    container exec -i -t --user dev "$NAME" codex login --device-auth
-  else
-    echo "dev: no cached Codex login. Run interactively once, or set" >&2
-    echo "     OPENAI_API_KEY/CODEX_ACCESS_TOKEN for this launch." >&2
-    exit 1
-  fi
+if [[ "$AGENT" == codex && -z "${DEV_SANDBOX_SHELL:-}" ]]; then
+  sandbox_ensure_codex_login dev "$NAME" dev \
+    "Re-run $LAUNCHER in a terminal for device login."
 fi
 set +e
 # F6: set the working dir with `container exec -w` (apple/container 1.0.0) instead
