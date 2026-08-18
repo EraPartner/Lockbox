@@ -15,8 +15,9 @@
 # toolchain instead of the egress files).
 #
 # Modes:
-#   --check          offline. Assert tool-pins.env == both Dockerfiles' ARG
-#                    defaults. Exits non-zero on divergence. Pre-commit gate.
+#   --check          offline. Assert tool-pins.env == every Dockerfile's ARG
+#                    defaults and required Codex runtime tools are present.
+#                    Exits non-zero on divergence. Pre-commit gate.
 #   --report         network. Show pinned vs cooldown-eligible vs upstream latest
 #                    for every tracked tool. Read-only; answers "are we stale?".
 #   --write          network. Resolve the newest COOLDOWN-eligible version of each
@@ -105,6 +106,22 @@ if [[ "$MODE" == check ]]; then
       echo "WARN: $(label "$df") is ${sz} bytes — only $((DOCKERFILE_MAX_BYTES - sz)) left before apple/container's practical build ceiling." >&2
     fi
   done
+  # Codex's Linux sandbox requires bubblewrap. Keep the package, the
+  # launch-integrity fingerprint, and the doctor check fleet-wide; otherwise a
+  # project can pass the version-pin gate while Codex falls back or fails there.
+  for df in "${DOCKERFILES[@]}"; do
+    dc="$(dirname "$df")"
+    apt_block="$(sed -n '/apt-get install -y --no-install-recommends \\/,/rm -rf \/var\/lib\/apt\/lists/p' "$df")"
+    if ! grep -Eq '(^|[[:space:]])bubblewrap[[:space:]]' <<<"$apt_block"; then
+      echo "DRIFT: $(label "$df") does not install bubblewrap (required by Codex)" >&2; rc=1
+    fi
+    if ! grep -Eq 'for b in .* bwrap([[:space:]]|;)' "$df"; then
+      echo "DRIFT: $(label "$df") does not fingerprint bwrap in its binary pin manifest" >&2; rc=1
+    fi
+    if [[ ! -f "$dc/bin/doctor" ]] || ! grep -Eq '(^|[[:space:]])bwrap([[:space:]]|"|$)' "$dc/bin/doctor"; then
+      echo "DRIFT: $(label "$df") doctor does not check bwrap" >&2; rc=1
+    fi
+  done
   # REQUIRED in every managed Dockerfile. Node/Python verify against upstream
   # SHASUMS; Claude is currently fleet-wide.
   MIRRORED=(NODE_VERSION PY_RELEASE PY_VERSION CLAUDE_CODE_VERSION
@@ -137,9 +154,9 @@ if [[ "$MODE" == check ]]; then
     echo "note: ${#MISSING[@]} managed devcontainer(s) not present on this machine; pins unchecked for them." >&2
   fi
   if (( rc == 0 )); then
-    echo "✓ pins: tool-pins.env matches all ${#DOCKERFILES[@]} Dockerfiles."
+    echo "✓ pins: tool-pins.env and required Codex tools match all ${#DOCKERFILES[@]} Dockerfiles."
   else
-    echo "✗ pins: Dockerfile ARG defaults diverged from tool-pins.env. Run ./bump-pins.sh --write, or hand-fix." >&2
+    echo "✗ pins: Dockerfile pins or required Codex tools diverged. Run ./bump-pins.sh --write, or hand-fix." >&2
   fi
   exit "$rc"
 fi

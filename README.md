@@ -131,11 +131,13 @@ at **build** time, behind review:
 | `tool-pins.env` | single source of truth for every baked tool version + hash |
 | `make pins-report` | pinned vs cooldown-eligible vs upstream latest — *"are we stale?"* |
 | `make pins` | resolve, re-hash and rewrite the pins (`./bump-pins.sh` alone = dry run) |
-| `make pins-check` | offline gate: `tool-pins.env` must match every Dockerfile `ARG` |
+| `make pins-check` | offline gate: pins plus required Codex tools must match every managed image |
 
 The Dockerfiles carry the pins as `ARG` defaults so a plain `container build` needs
 no extra flags; `pins-check` (run by `.githooks/pre-commit`, `make check`, and CI)
-fails if the two ever diverge. `.github/workflows/bump-pins.yml` runs the resolver
+fails if the two ever diverge. It also requires every managed image to install,
+fingerprint, and diagnose `bubblewrap`, the Codex Linux sandbox prerequisite.
+`.github/workflows/bump-pins.yml` runs the resolver
 weekly and opens a PR — never auto-merged, because the version + hash diff *is* the
 reviewed anchor for what the image may execute.
 
