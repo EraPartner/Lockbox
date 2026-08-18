@@ -182,21 +182,9 @@ sandbox_install_autosync_trap lockbox "$CID" "$AUTOSYNC" "${LOCKBOX_STOP_ON_EXIT
 # --- 8) Authenticate Codex on first use, then open the selected agent ---------
 TTY_FLAGS=()
 [[ -t 0 && -t 1 ]] && TTY_FLAGS=(-i -t)
-if [[ "$AGENT" == codex ]] && ! container exec --user "$SVC_USER" "$NAME" codex login status >/dev/null 2>&1; then
-  if [[ -n "${OPENAI_API_KEY:-}" ]]; then
-    container exec -i --user "$SVC_USER" -e OPENAI_API_KEY "$NAME" \
-      bash -c 'printenv OPENAI_API_KEY | codex login --with-api-key'
-  elif [[ -n "${CODEX_ACCESS_TOKEN:-}" ]]; then
-    container exec -i --user "$SVC_USER" -e CODEX_ACCESS_TOKEN "$NAME" \
-      bash -c 'printenv CODEX_ACCESS_TOKEN | codex login --with-access-token'
-  elif (( ${#TTY_FLAGS[@]} > 0 )); then
-    echo "codex (lockbox): no cached login; starting ChatGPT device-code login." >&2
-    container exec -i -t --user "$SVC_USER" "$NAME" codex login --device-auth
-  else
-    echo "codex (lockbox): no cached login. Run interactively once for device-code login," >&2
-    echo "  or set OPENAI_API_KEY/CODEX_ACCESS_TOKEN for this launch." >&2
-    exit 1
-  fi
+if [[ "$AGENT" == codex ]]; then
+  sandbox_ensure_codex_login "$SVC_USER" "$NAME" "codex (lockbox)" \
+    "Re-run $LAUNCHER in a terminal for device login."
 fi
 set +e
 container exec --user "$SVC_USER" ${TTY_FLAGS[@]+"${TTY_FLAGS[@]}"} ${EXEC_ENV[@]+"${EXEC_ENV[@]}"} "$NAME" "$AGENT" "$@"

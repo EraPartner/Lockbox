@@ -17,6 +17,11 @@ every vendored copy, so a baked container self-identifies its egress-lock genera
   creation-time `SANDBOX_AGENT` is missing or mismatched. Lifecycle and doctor
   checks no longer silently interpret missing provider state as Claude, and
   diagnostics distinguish the selected provider from the two installed CLIs.
+- Codex authentication now lives in the canonical launcher helper instead of
+  being duplicated across the LockBox and generic launchers. A new offline
+  provider-parity check gates the shared wrappers, lifecycle acceptance, CLI
+  installation and pinning, private config volumes, and effective API egress for
+  both Claude and Codex as part of `make check`.
 
 ### Added — provider-neutral in-repo sandboxes
 - Both in-repo images now bake a reviewed, version-pinned OpenAI Codex CLI beside

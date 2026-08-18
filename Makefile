@@ -1,6 +1,6 @@
 # LockBox convenience targets. Run `make setup` ONCE per fresh clone to enable the
 # tracked pre-commit gate (git does not carry core.hooksPath across a clone).
-.PHONY: setup sync check audit test help pins pins-check pins-report
+.PHONY: setup sync check audit test provider-check help pins pins-check pins-report
 
 help: ## Show this help
 	@grep -E '^[a-z][a-zA-Z0-9_-]*:.*## ' $(MAKEFILE_LIST) \
@@ -16,6 +16,10 @@ sync: ## Vendor canonical files + regenerate allowlists into every managed devco
 check: ## Verify vendored copies, allowlists, and toolchain pins are in sync (no writes)
 	./sync.sh --check
 	./bump-pins.sh --check
+	./test/provider-parity.sh
+
+provider-check: ## Verify Claude/Codex entry points retain the same shared architecture
+	./test/provider-parity.sh
 
 pins-report: ## Show pinned vs cooldown-eligible vs upstream-latest tool versions (network)
 	./bump-pins.sh --report

@@ -113,6 +113,35 @@ sandbox_forward_llm_creds() {
   return 0
 }
 
+# --- Ensure Codex has a private, in-container login --------------------------
+# Usage: sandbox_ensure_codex_login <container-user> <container> <label> <hint>
+#
+# Both in-repo launchers use the same authentication policy: prefer an existing
+# cache in the provider's private volume, allow one-shot environment bootstrap,
+# then fall back to the official interactive device-code flow. Keeping this here
+# prevents the security-sensitive credential plumbing from drifting between the
+# LockBox and generic sandboxes.
+sandbox_ensure_codex_login() {
+  local container_user="$1" container_name="$2" label="$3" hint="$4"
+
+  container exec --user "$container_user" "$container_name" codex login status >/dev/null 2>&1 && return 0
+
+  if [[ -n "${OPENAI_API_KEY:-}" ]]; then
+    container exec -i --user "$container_user" -e OPENAI_API_KEY "$container_name" \
+      bash -c 'printenv OPENAI_API_KEY | codex login --with-api-key'
+  elif [[ -n "${CODEX_ACCESS_TOKEN:-}" ]]; then
+    container exec -i --user "$container_user" -e CODEX_ACCESS_TOKEN "$container_name" \
+      bash -c 'printenv CODEX_ACCESS_TOKEN | codex login --with-access-token'
+  elif [[ -t 0 && -t 1 ]]; then
+    echo "$label: no cached Codex login; starting ChatGPT device-code login." >&2
+    container exec -i -t --user "$container_user" "$container_name" codex login --device-auth
+  else
+    echo "$label: no cached Codex login. Run interactively once, or set" >&2
+    echo "  OPENAI_API_KEY/CODEX_ACCESS_TOKEN. $hint" >&2
+    return 1
+  fi
+}
+
 # --- Install an exit trap: push config back, then optionally power down --------
 # Usage: sandbox_install_autosync_trap <profile> <container-id> <autosync:0|1> [stop_on_exit:0|1]
 # On shell exit the trap runs, at most once:
