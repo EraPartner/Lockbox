@@ -74,7 +74,7 @@ own overlay; they are deliberately not in the fleet-wide base.
   `--security-opt`; the VM boundary is the isolation control).
 - Root entrypoint locks egress (default-deny, proxy-UID-only) **before** the
   proxy starts; fail-closed. Dev sessions run unprivileged.
-- **Launch-integrity pins**: `node/npm/claude/codex/gh/git/python3` are fingerprinted
+- **Launch-integrity pins**: `node/npm/claude/codex/bwrap/gh/git/python3` are fingerprinted
   at build; `bin/dev` aborts if any drift before opening an agent. A real upgrade
   trips this — rebuild to re-pin with the selected provider, for example:
   `DEV_SANDBOX_REBUILD=1 dev-codex`.

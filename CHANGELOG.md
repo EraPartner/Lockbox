@@ -8,6 +8,12 @@ every vendored copy, so a baked container self-identifies its egress-lock genera
 
 ## [Unreleased]
 
+### Fixed — Codex sandbox prerequisite
+- Both in-repo images now install Debian's `bubblewrap` package, so Codex finds
+  its Linux sandbox helper on `PATH` instead of warning and falling back to its
+  bundled copy. The launch-integrity manifest fingerprints `bwrap` alongside
+  the agent CLIs and shared tools.
+
 ### Changed — explicit provider selection
 - LockBox's Claude and Codex entry points now call a shared provider-neutral
   `bin/agent` implementation. The generic sandbox also provides explicit

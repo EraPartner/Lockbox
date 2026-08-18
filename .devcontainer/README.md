@@ -18,6 +18,7 @@ box also vendored in this repo — this one is scoped to editing LockBox.)
 | `shellcheck`, `make` | apt / build-essential — lint + drive the repo's Makefile      |
 | Claude Code          | `npm i -g @anthropic-ai/claude-code` (baked, pinned)          |
 | OpenAI Codex         | `npm i -g @openai/codex` (baked, native binary hash-pinned)   |
+| Bubblewrap           | apt (Codex Linux sandbox prerequisite, build-time fingerprinted) |
 | safe-chain           | baked, version-pinned (screens npm/pip installs)               |
 
 LockBox is bash/shell infra (no root `package.json`), so there is no `npm ci` /
@@ -143,7 +144,7 @@ Run `bash .devcontainer/bin/doctor` inside the box for a one-shot readiness chec
 proxy. ECH (encrypted SNI) destinations fail closed (no SNI → terminated).
 
 **Launch-integrity gate.** The image bakes `lockbox-verify-pins`, which records a
-SHA-256 of `node`, `npm`, `claude`, `codex`, `gh`, `git`, and `python3` at build time. The
+SHA-256 of `node`, `npm`, `claude`, `codex`, `bwrap`, `gh`, `git`, and `python3` at build time. The
 launcher runs it on every start and **aborts fail-closed** on fingerprint drift or
 if the checker is missing (a stale pre-pin image) — rebuild to re-pin
 (`LOCKBOX_REBUILD=1 lockbox-claude`).
