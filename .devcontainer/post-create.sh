@@ -54,8 +54,8 @@ fi
 
 # Minimal ~/.gitconfig: just mark the bind-mounted workspace safe so read-only
 # git ops (log/diff/status) work despite the mount's non-dev ownership. No
-# identity/signing/push config — commits & pushes happen on the HOST, and the
-# in-container .git is read-only.
+# identity/signing/push config — publication happens in the separate git-agent
+# container, and this editing container's .git is read-only.
 if [[ ! -f /home/dev/.gitconfig || ! -s /home/dev/.gitconfig ]]; then
   cat > /home/dev/.gitconfig <<'EOF'
 [safe]

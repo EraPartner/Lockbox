@@ -76,7 +76,7 @@ fi
 
 # gh token forwarded?
 [[ -z "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ]] \
-  && pass "no git push token in env (commits happen on the host — expected)" \
+  && pass "no git push token in env (publication uses the separate git-agent — expected)" \
   || fail "GH_TOKEN/GITHUB_TOKEN present — a container must NOT hold a git push credential"
 
 # Egress audit log readable by dev?

@@ -198,12 +198,14 @@ runs: `shell` (bash -n + shellcheck), `secrets` (audit.sh), `secrets-scan`
 
 ## Git / commits
 
-Commit & push happen on the **host** (the sandboxes mount `.git` read-only and
-carry no push credential). This repo **signs commits** (`commit.gpgsign=true`,
-`gpg.format=ssh`, Secure-Enclave `sk` key); default branch is `main` and
-`core.hooksPath=.githooks`. Write clear messages (what + why); update
-`README.md`/`.devcontainer/README.md`/`CHANGELOG.md`/this file when behavior
-changes; bump `VERSION` + re-`sync.sh` + tag when releasing.
+LockBox's ordinary `.devcontainer` editing sandboxes only edit and test the worktree. They mount
+`.git` read-only, carry no push credential, and must not access the host SSH agent. Start the
+separate `git-agent` launcher on the host when the diff is ready; its narrow LockBox container
+reviews and stages explicit paths, creates the signed commit, and pushes. This repo **signs commits**
+(`commit.gpgsign=true`, `gpg.format=ssh`, Secure-Enclave `sk` key); default branch is `main` and
+`core.hooksPath=.githooks`. Write clear messages (what + why); update `README.md`,
+`.devcontainer/README.md`, `CHANGELOG.md`, and this file when behavior changes; bump `VERSION`, run
+`./sync.sh`, and tag when releasing.
 
 ## When stuck
 
