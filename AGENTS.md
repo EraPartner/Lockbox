@@ -56,19 +56,22 @@ Two independent, **fail-closed** layers, applied by the root entrypoint on every
 
 1. **iptables/ip6tables egress lock** (`init-firewall.sh`) — default-DROP first, then only the
    `proxy` UID may originate outbound packets. Everything else uses the proxy over loopback or is
-   dropped.
+   dropped. IPv6 OUTPUT is default-deny. Cloud metadata (`169.254.169.254` and `fd00:ec2::254`) is
+   dropped before the proxy-UID accept. The root entrypoint writes `/run/egress-firewall-ok` only
+   after verifying the policy and key rules with `iptables -C`; a missing sentinel fails startup.
 2. **In-container squid SNI proxy** (`squid.conf`, peek+splice, **CONNECT-only**, HTTPS-only) —
    splices allowed hostnames without decrypting (**end-to-end TLS preserved, no MITM / CA
-   injection**) and terminates the rest.
+   injection**) and terminates the rest. A non-CONNECT absolute-URI request is denied, ECH-hidden
+   SNI has no allowlisted name and is terminated, and the entrypoint supervises squid. If squid
+   dies, the packet layer keeps egress denied until it restarts.
 
 Defense-in-depth on top: **safe-chain** screens `npm`/`pip` installs against
 `malware-list.aikido.dev`, and the **launch-integrity gate** (`bin/verify-pins`) aborts the launch
 on toolchain drift.
 
-Full mechanism — sentinel verification, IPv6 and cloud-metadata handling, ECH,
-squid supervision, allowlist composition, baked vs bind-mounted — is documented
-in `.claude/rules/egress-internals.md`. Codex/ChatGPT agents must read it directly
-when touching those files; Claude loads it through its path-scoped rule.
+This section is the provider-neutral source of truth. Claude's path-scoped
+`.claude/rules/egress-internals.md` is a compatibility reminder and must not carry a conflicting
+copy of the mechanism.
 
 ## Allowlist model (base + overlay)
 
@@ -77,7 +80,10 @@ when touching those files; Claude loads it through its path-scoped rule.
 into the baked `.devcontainer/allowlist.txt`, which is **GENERATED — DO NOT EDIT**. **Keep the base
 minimal — anything added there widens egress for all managed containers.** To change egress: edit
 the base or an extra, run `./sync.sh`, then **rebuild** the affected container so the new allowlist
-is re-baked and re-read.
+is re-baked and re-read. LockBox and sibling provider launchers bake the list into the image and
+warn when a reused container is stale. The generic sandbox bind-mounts its list and may reconfigure
+squid, but it accepts a target-workspace overlay only after interactive confirmation; noninteractive
+launches ignore that untrusted overlay and fail closed.
 
 ## Security invariants (do not weaken without explicit sign-off)
 
@@ -211,4 +217,6 @@ user decide — do not route around it.
 Run `bash .codex/cloud/setup.sh` as the Codex cloud environment setup command. Cloud sessions may
 edit source and run portable static checks, but they cannot validate Apple Container runtime,
 Secure Enclave signing, host mounts, or macOS firewall behavior. Never report those host-only
-checks as passed from a cloud session.
+checks as passed from a cloud session. In cloud sessions, do not commit, sign, tag, push, configure
+Git credentials, or create a pull request with `gh`; leave the diff for Codex's **Open pull
+request** action.

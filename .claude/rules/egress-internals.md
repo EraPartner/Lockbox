@@ -11,8 +11,13 @@ paths:
 
 # Egress enforcement internals
 
-Mechanism detail for the canonical egress files. The non-negotiable rules that govern changing
-them live in `## Security invariants` in `AGENTS.md` and apply whether or not this file is loaded.
+This path-scoped Claude compatibility rule intentionally contains no separate authoritative
+mechanism. Before changing a matched file, follow `## Before any task`, `## How egress is enforced`,
+`## Allowlist model`, and `## Security invariants` in the root `AGENTS.md`. Those sections are the
+provider-neutral source of truth and apply to Claude, Codex, and every other agent.
+
+The detail below is retained as explanatory background. If it conflicts with root `AGENTS.md`, stop
+and correct this rule rather than choosing a provider-specific behavior.
 
 ## How egress is enforced (the core model)
 

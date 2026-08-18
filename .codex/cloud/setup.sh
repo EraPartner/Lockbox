@@ -11,4 +11,5 @@ touch "$HOME/.bashrc"
 grep -Fqx 'export CODEX_SESSION_ENV=cloud' "$HOME/.bashrc" || \
   printf '%s\n' 'export CODEX_SESSION_ENV=cloud' >> "$HOME/.bashrc"
 
-printf '%s\n' 'LockBox cloud setup complete. Host-only security checks remain unavailable.'
+printf '%s\n' 'LockBox cloud setup complete. Use Codex Open pull request for Git handoff.'
+printf '%s\n' 'Host-only signing, push, and security checks remain unavailable.'
