@@ -25,11 +25,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 # releases drop older versions from the mirror, so a hard pin would break cache-miss
 # rebuilds outright. Integrity comes instead from (a) SHA256-verified downloads for
 # the tools that matter most (Node + Python, further down) and (b) the launch-time
-# verify-pins gate, which fails closed on any drift of node/npm/claude/gh/git/
-# python3 against binary-pins.txt.
+# verify-pins gate, which fails closed on any drift of the agent CLIs, bwrap,
+# safe-chain, or the shared toolchain against binary-pins.txt.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl gnupg lsb-release xz-utils \
-      git less procps jq locales openssh-client unzip rsync \
+      git less procps jq locales openssh-client unzip rsync bubblewrap \
       iptables dnsutils openssl \
       squid-openssl \
       build-essential pkg-config \
@@ -179,7 +179,7 @@ RUN set -eux; \
     pinfile=/usr/local/share/dev-sandbox/binary-pins.txt; \
     mkdir -p /usr/local/share/dev-sandbox; \
     : > "$pinfile"; \
-    for b in node npm claude codex gh git python3 safe-chain; do \
+    for b in node npm claude codex bwrap gh git python3 safe-chain; do \
       p="$(command -v "$b")"; \
       h="$(sha256sum "$p" | awk '{print $1}')"; \
       printf '%s\t%s\t%s\n' "$b" "$p" "$h" >> "$pinfile"; \

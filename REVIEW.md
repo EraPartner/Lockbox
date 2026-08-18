@@ -51,7 +51,8 @@ automatically. See `AGENTS.md` for the why behind each item.
 - [ ] `make setup` was run once in this clone (else the pre-commit leak/drift gate is
       silently skipped — git doesn't carry `core.hooksPath`).
 - [ ] Signed commit (repo signs via the Secure-Enclave ssh key; `commit.gpgsign=true`),
-      committed on the HOST, to `main`, with a clear what+why message.
+      published through the separate `git-agent` LockBox container to `main`, with a clear
+      what+why message.
 - [ ] Docs updated when behavior changed (`README.md` / `.devcontainer/README.md` /
       `CHANGELOG.md` / `CLAUDE.md`); `VERSION` bumped + `./sync.sh` re-run + `v<VERSION>`
       tag when cutting a release.

@@ -26,7 +26,7 @@ if ( : > "$WS/.doctor.$$" ) 2>/dev/null; then rm -f "$WS/.doctor.$$"; ok "worksp
 git -C "$WS" rev-parse --short HEAD >/dev/null 2>&1 && ok "git read ops work (HEAD: $(git -C "$WS" rev-parse --short HEAD 2>/dev/null))" || note "not a git repo (or no commits) — fine for non-git targets"
 
 echo "== Toolchain =="
-for b in node npm claude codex gh git python3; do
+for b in node npm claude codex bwrap gh git python3; do
   command -v "$b" >/dev/null 2>&1 && ok "installed CLI/tool: $b ($("$b" --version 2>/dev/null | head -1))" || bad "$b missing"
 done
 

@@ -18,6 +18,7 @@ box also vendored in this repo — this one is scoped to editing LockBox.)
 | `shellcheck`, `make` | apt / build-essential — lint + drive the repo's Makefile      |
 | Claude Code          | `npm i -g @anthropic-ai/claude-code` (baked, pinned)          |
 | OpenAI Codex         | `npm i -g @openai/codex` (baked, native binary hash-pinned)   |
+| Bubblewrap           | apt (Codex Linux sandbox prerequisite, build-time fingerprinted) |
 | safe-chain           | baked, version-pinned (screens npm/pip installs)               |
 
 LockBox is bash/shell infra (no root `package.json`), so there is no `npm ci` /
@@ -143,7 +144,7 @@ Run `bash .devcontainer/bin/doctor` inside the box for a one-shot readiness chec
 proxy. ECH (encrypted SNI) destinations fail closed (no SNI → terminated).
 
 **Launch-integrity gate.** The image bakes `lockbox-verify-pins`, which records a
-SHA-256 of `node`, `npm`, `claude`, `codex`, `gh`, `git`, and `python3` at build time. The
+SHA-256 of `node`, `npm`, `claude`, `codex`, `bwrap`, `gh`, `git`, and `python3` at build time. The
 launcher runs it on every start and **aborts fail-closed** on fingerprint drift or
 if the checker is missing (a stale pre-pin image) — rebuild to re-pin
 (`LOCKBOX_REBUILD=1 lockbox-claude`).
@@ -307,7 +308,7 @@ skip the Keychain dance, the launcher also picks up
 straight from your shell env. Worse posture (plaintext in
 `~/.config/fish/fish_variables`), but functional.
 
-## Git (read-only inside; commit & push on the host)
+## Git (read-only inside; publication through git-agent)
 
 The container can **read** git history but cannot change it. The repo's `.git`
 is bind-mounted **read-only**, no git credential (`GH_TOKEN`/`GITHUB_TOKEN`) is
@@ -319,12 +320,12 @@ can't rewrite history, push, or sign/authenticate as you over SSH.
 | `git status` / `diff` / `log` / `show`      | ✅       | Read-only on the bind-mounted repo (`safe.directory` is set)                     |
 | `git commit` / `rebase` / `reset` / `amend` | ❌       | `.git` is read-only — fails with EROFS, by design                                |
 | `git push` / `gh pr create`                 | ❌       | No credential in the container; `git push` errors with "could not read Username" |
-| commit signing (ssh-agent)                  | ❌ (n/a) | No ssh-agent forwarded; nothing to sign with — commits happen on the host        |
+| commit signing (ssh-agent)                  | ❌ (n/a) | No ssh-agent forwarded; signing belongs to the separate `git-agent` container     |
 
 **Workflow:** make changes inside the container (they appear on the host via the
-bind mount immediately), then **commit and push from your host** where your
-gitconfig, signing key, and gh auth live. There is no in-container git auth to
-set up.
+bind mount immediately), then leave this editing session and invoke the host-side `git-agent`
+launcher. Its separate narrow container reviews, stages, signs, commits, and pushes the handed-off
+diff. There is no Git authentication to set up in this editing container.
 
 ## Project memory
 

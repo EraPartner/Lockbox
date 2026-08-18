@@ -13,7 +13,7 @@ setup: ## Enable the tracked pre-commit hook (run once per clone)
 sync: ## Vendor canonical files + regenerate allowlists into every managed devcontainer
 	./sync.sh
 
-check: ## Verify vendored copies, allowlists, and toolchain pins are in sync (no writes)
+check: ## Verify vendored copies, allowlists, required tools, and pins are in sync (no writes)
 	./sync.sh --check
 	./bump-pins.sh --check
 	./test/provider-parity.sh
