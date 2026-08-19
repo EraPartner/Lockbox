@@ -8,9 +8,9 @@ git mounts, or launch-integrity checks.
 
 Single source of truth for the egress firewall, the SNI-allowlist proxy, and the
 host-side launcher helpers used by the Vision, Watchman, Brain, Napoleon-relay,
-git-agent, and generic `sandbox` devcontainers. Previously each
+git-agent, dotfiles, VaultLens, and the two in-repo devcontainers. Previously each
 container carried its own copy of `init-firewall.sh` + `squid.conf`; now you edit
-them **here** and run `./sync.sh` — one edit instead of six.
+them **here** and run `./sync.sh` — one edit instead of nine.
 
 The managed-container list lives in `paths.sh` (shared by `sync.sh` and `audit.sh`)
 so it exists in ONE place — keep it current if a project moves, or the vendored

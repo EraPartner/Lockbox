@@ -334,7 +334,7 @@ Checked and found clean (Pass 8b — do not re-investigate):
 - `bin/dev` build skip verified: `container image inspect` gate at :134 means the builder VM spins up only on missing image or `DEV_SANDBOX_REBUILD=1`, and the builder is stopped afterward to release ~2 GB RAM. `squid -k reconfigure` (:154-157) fires only when the staged allowlist checksum actually changed. Warm-reuse path is otherwise minimal in `container` CLI calls.
 - `bin/verify-pins` — hashes 6 binaries (~200-300 MB) once per launch, sub-second; appropriate cost for a fail-closed integrity gate.
 - `perms-fix.sh` — `chown -R` runs only on top-level owner mismatch (first volume mount); no-op on warm starts.
-- `post-create.sh` — safe-chain npm install is once-per-container and intentionally synchronous before the first agent session.
+- `post-create.sh` — safe-chain is baked at a reviewed version pin; post-create only wires the wrappers and aborts if setup fails.
 - `post-start.sh` per-start cost — `rsync -a --update` is metadata-bound on a converged tree; one jq merge; four rm -rf of usually-absent dirs. Negligible.
 - `squid.conf` runtime tuning — `cache deny all` + splice-only CONNECT means no object cache, no bumping; sslcrtd helpers idle (a few MB, not worth tuning for one user); `shutdown_lifetime 1 second` already minimizes stop latency; built-in positive DNS cache adequate; removed `dns_v4_first` is safe latency-wise because squid 6.x uses Happy Eyeballs, so the ip6tables-DROPped IPv6 attempt costs ~250ms once per host, not a connect_timeout stall.
 - `bin/doctor` — network probes bounded by `--max-time` 12/8; six `--version` invocations are diagnostic-path only.

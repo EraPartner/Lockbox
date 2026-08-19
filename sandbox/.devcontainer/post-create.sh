@@ -43,14 +43,15 @@ fi
 # executed BEFORE it could screen anything — so a compromised safe-chain release
 # was the one package guaranteed to land unscreened. This step now only wires up
 # the shell wrappers: no network, no new code, nothing to retry.
-if command -v safe-chain >/dev/null 2>&1; then
-  safe-chain setup >/dev/null 2>&1 || true
-  echo "[post-create] safe-chain wired up (baked pin, no runtime fetch)."
-else
-  echo "[post-create] ⚠ WARN: safe-chain MISSING FROM THE IMAGE — package installs are NOT" >&2
-  echo "[post-create]   supply-chain screened. The image was built wrong; rebuild it." >&2
-  echo "[post-create]   \`.devcontainer/bin/doctor\` will also flag this." >&2
-fi
+command -v safe-chain >/dev/null 2>&1 || {
+  echo "[post-create] ERROR: safe-chain is missing from the image; rebuild required." >&2
+  exit 1
+}
+safe-chain setup >/dev/null 2>&1 || {
+  echo "[post-create] ERROR: safe-chain setup failed; refusing an unscreened session." >&2
+  exit 1
+}
+echo "[post-create] safe-chain wired up (baked pin, no runtime fetch)."
 
 # --- git: identity only (no signing key, no push token in this box) -----------
 # Include the bind-mounted host gitconfig (user.name/email) and mark the

@@ -31,13 +31,17 @@ done
 require_literal .devcontainer/bin/agent 'sandbox_ensure_codex_login'
 require_literal sandbox/.devcontainer/bin/dev 'sandbox_ensure_codex_login'
 require_literal launcher-common.sh 'sandbox_ensure_codex_login()'
+require_literal launcher-common.sh 'refusing unsanitized ~/.claude.json because jq is unavailable'
+if grep -Fq 'cp "$HOME/.claude.json"' launcher-common.sh; then
+  fail "Claude staging retains a raw ~/.claude.json fallback"
+fi
 
 # One shared image installs and launch-pins both CLIs; each provider retains an
 # isolated writable config volume and its required API endpoint.
 for dockerfile in .devcontainer/Dockerfile sandbox/.devcontainer/Dockerfile; do
   require_literal "$dockerfile" 'npm install -g --no-fund --no-audit "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"'
   require_literal "$dockerfile" 'npm install -g --no-fund --no-audit "@openai/codex@${CODEX_VERSION}"'
-  require_literal "$dockerfile" 'node npm claude codex gh git python3 safe-chain'
+  require_literal "$dockerfile" 'node npm claude codex bwrap gh git python3 safe-chain'
 done
 require_literal .devcontainer/bin/agent 'lockbox-claude:/home/dev/.claude'
 require_literal .devcontainer/bin/agent 'lockbox-codex:/home/dev/.codex'

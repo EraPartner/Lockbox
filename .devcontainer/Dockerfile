@@ -162,8 +162,8 @@ RUN set -eux; \
 # transitive deps are not hash-pinned — a reviewed version pin, not a closure pin.
 ARG SAFE_CHAIN_VERSION=1.5.12
 RUN npm install -g --no-fund --no-audit "@aikidosec/safe-chain@${SAFE_CHAIN_VERSION}" \
-  && command -v safe-chain \
-  && safe-chain --version 2>/dev/null || true
+  && command -v safe-chain
+RUN safe-chain --version 2>/dev/null || true
 
 # The root-owned prefix already stops Claude Code's self-updater replacing the
 # pinned binary; this stops it retrying each session. Upgrades here are rebuilds.
