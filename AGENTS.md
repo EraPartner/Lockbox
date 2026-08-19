@@ -219,6 +219,10 @@ user decide — do not route around it.
 Run `bash .codex/cloud/setup.sh` as the Codex cloud environment setup command. Cloud sessions may
 edit source and run portable static checks, but they cannot validate Apple Container runtime,
 Secure Enclave signing, host mounts, or macOS firewall behavior. Never report those host-only
-checks as passed from a cloud session. In cloud sessions, do not commit, sign, tag, push, configure
-Git credentials, or create a pull request with `gh`; leave the diff for Codex's **Open pull
-request** action.
+checks as passed from a cloud session. In cloud sessions, do not publish with shell Git commands,
+configure Git credentials, or create a pull request with `gh`. The platform-managed **Open pull
+request** action may create a pull request, and the connected GitHub integration may update the
+same branch for pull-request-linked follow-ups. When the user explicitly requests it, that
+integration may merge the pull request after all required checks and approvals pass and no blocking
+review remains. Do not use an admin bypass or directly update a default or protected branch outside
+that approved merge.
