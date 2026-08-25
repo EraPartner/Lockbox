@@ -48,7 +48,7 @@ RUN install -d -m 0755 /etc/apt/keyrings \
   && rm -rf /var/lib/apt/lists/*
 
 # --- Node.js — official static build (matches the other sandboxes) -----------
-ARG NODE_VERSION=24.15.0
+ARG NODE_VERSION=24.19.0
 RUN set -eux; \
     case "$(dpkg --print-architecture)" in amd64) na=x64 ;; arm64) na=arm64 ;; *) exit 1 ;; esac; \
     curl -fsSLo /tmp/node.tar.xz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${na}.tar.xz"; \
@@ -97,9 +97,9 @@ RUN printf 'export PATH="/usr/local/share/npm-global/bin:/opt/python/bin:/usr/lo
 # --- Claude Code CLI ----------------------------------------------------------
 # Root-owned and pinned from tool-pins.env. Hash the native optional-dependency
 # payload and restore it when npm leaves the wrapper stub.
-ARG CLAUDE_CODE_VERSION=2.1.207
-ARG CLAUDE_CODE_SHA256_ARM64=8bc14a284065383460f37981d724b8f7aa7ca93c9849d2fe367e08f03383f454
-ARG CLAUDE_CODE_SHA256_AMD64=85e7e988a392d859f90802ca21fb26e89d3c9ab527f5ed0b08df3955e34d5c83
+ARG CLAUDE_CODE_VERSION=2.1.234
+ARG CLAUDE_CODE_SHA256_ARM64=24adda673591cd8345b03ec8245915bb151a259a1ebc3ef23649b57ba944aaa2
+ARG CLAUDE_CODE_SHA256_AMD64=3473601ea695d5bf769c5b202844d4cb4fbf723ae995450fcb6973204775c84a
 RUN set -eux; \
     npm install -g --no-fund --no-audit "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"; \
     case "$(dpkg --print-architecture)" in arm64) na=linux-arm64; want="${CLAUDE_CODE_SHA256_ARM64}" ;; amd64) na=linux-x64; want="${CLAUDE_CODE_SHA256_AMD64}" ;; *) exit 1 ;; esac; \
@@ -139,7 +139,7 @@ RUN set -eux; \
 # BAKED, not installed at runtime: post-create.sh used to `npm i -g` this unpinned
 # inside the security boundary, BEFORE it could screen anything. LIMIT: its 8
 # transitive deps are not hash-pinned — a reviewed version pin, not a closure pin.
-ARG SAFE_CHAIN_VERSION=1.5.12
+ARG SAFE_CHAIN_VERSION=1.5.15
 RUN npm install -g --no-fund --no-audit "@aikidosec/safe-chain@${SAFE_CHAIN_VERSION}" \
   && command -v safe-chain
 RUN safe-chain --version 2>/dev/null || true
