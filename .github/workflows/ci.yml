@@ -119,6 +119,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v4
+      - name: Check generated cloud agreement
+        run: python3 .codex/cloud/check-instructions.py
       - name: sync.sh --check (self-only)
         # EGRESS_SELF_ONLY restricts the target list to THIS repo's sandbox/.devcontainer
         # (the sibling fleet repos aren't checked out here). Unlike the old hand-rolled

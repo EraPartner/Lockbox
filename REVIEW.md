@@ -59,9 +59,11 @@ publication is authorized; they are not prerequisites for proposing a worktree d
 
 ## Authorized publication only
 
-- [ ] In the separate `git-agent` LockBox container, verify the publication clone has the
-      tracked pre-commit leak/drift gate enabled before committing. Git does not carry
-      `core.hooksPath` across clones; setup belongs to the publication environment.
+- [ ] Keep repository hooks disabled in the separate `git-agent` container. Before handoff,
+      run `make check` in the editing checkout and record the exact changed-file hashes with
+      the results. Fleet validation requires sibling checkouts and cannot be recreated by the
+      single-repository publication mount. Follow `git-agent/PUBLICATION.md` for validation
+      evidence and the explicit staged-content audit; never execute repository hooks there.
 - [ ] Review and stage explicit paths there, then run the index secret audit before creating
       the signed commit with a clear what+why message. Publish to the authorized branch and
       create `v<VERSION>` only when releasing.
