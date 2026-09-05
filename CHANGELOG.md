@@ -8,6 +8,14 @@ every vendored copy, so a baked container self-identifies its egress-lock genera
 
 ## [Unreleased]
 
+### Fixed — agent engineering checks
+- Self-only vendoring checks now cover both in-repository containers. Missing canonical inputs
+  fail before any target write. `sync.sh --target=/absolute/managed/.devcontainer` allows a
+  bounded regeneration while refusing targets outside the managed list.
+- Continuous integration checks provider parity, isolated sync regressions, both Dockerfiles,
+  and generated cloud instructions. Publication review uses the separate git-agent handoff
+  protocol and keeps repository hooks disabled inside the publisher.
+
 ### Fixed — Codex sandbox prerequisite
 - All nine managed images now install Debian's `bubblewrap` package, so Codex finds
   its Linux sandbox helper on `PATH` instead of warning and falling back to its

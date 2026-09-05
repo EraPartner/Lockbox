@@ -122,7 +122,7 @@ jobs:
       - name: Check generated cloud agreement
         run: python3 .codex/cloud/check-instructions.py
       - name: sync.sh --check (self-only)
-        # EGRESS_SELF_ONLY restricts the target list to THIS repo's sandbox/.devcontainer
+        # EGRESS_SELF_ONLY restricts the target list to BOTH in-repo devcontainers
         # (the sibling fleet repos aren't checked out here). Unlike the old hand-rolled
         # cmp loop, this ALSO regenerates + compares the sandbox allowlist.txt via the
         # same gen_allowlist sync uses — so a base-allowlist.txt edit that wasn't
@@ -135,12 +135,19 @@ jobs:
         # here unconditionally. Catches a hand-bumped claude/node/python version
         # that would silently diverge the two images from the canonical pins.
         run: ./bump-pins.sh --check
+      - name: Provider architecture parity
+        run: ./test/provider-parity.sh
+      - name: Sync failure regressions
+        run: python3 test/test-sync.py
 
   dockerfile:
     name: dockerfile lint
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     if: github.event_name != 'schedule'
+    strategy:
+      matrix:
+        dockerfile: [.devcontainer/Dockerfile, sandbox/.devcontainer/Dockerfile]
     permissions:
       contents: read
     steps:
@@ -148,7 +155,7 @@ jobs:
       - name: hadolint
         uses: hadolint/hadolint-action@2332a7b74a6de0dda2e2221d575162eba76ba5e5 # v3.3.0
         with:
-          dockerfile: sandbox/.devcontainer/Dockerfile
+          dockerfile: ${{ matrix.dockerfile }}
           # DL3008 (pin apt versions) is a deliberate tradeoff here — the image
           # is rebuilt+re-pinned via binary-pins.txt, not apt version pins.
           ignore: DL3008
