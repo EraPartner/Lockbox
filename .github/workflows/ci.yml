@@ -2,10 +2,11 @@ name: CI
 
 # Guards the security-critical shell + container definitions. These checks are
 # SELF-CONTAINED: they never touch the sibling fleet repos (Vision/Watchman/…),
-# which aren't checked out here — so `sync.sh --check` (which needs all six
-# targets) is intentionally NOT run in CI; the local .githooks/pre-commit covers
-# fleet drift on the machine that owns the fleet. CI covers what one checkout can
-# prove: scripts parse + lint clean, no secrets are baked in (audit.sh regex
+# which aren't checked out here — so the full-fleet `sync.sh --check` is not run
+# in this workflow. Each hosted receiving repository performs its own target-scoped
+# comparison with canonical LockBox main; the local pre-commit check still covers
+# the whole side-by-side fleet, including non-hosted targets. This CI proves scripts
+# parse + lint clean, no secrets are baked in (audit.sh regex
 # scan + a gitleaks backstop), the in-repo vendored copies match their canonical
 # sources, no Dockerfile misconfigs slip in (Trivy), squid.conf parses, and — by
 # booting the image under a privileged runner — the egress lock actually enforces

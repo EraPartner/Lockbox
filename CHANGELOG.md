@@ -8,6 +8,17 @@ every vendored copy, so a baked container self-identifies its egress-lock genera
 
 ## [Unreleased]
 
+### Changed — TODO review
+- Claude credential forwarding now returns as soon as a Keychain token is added, instead of
+  rescanning the launch environment to rediscover the flag it just appended.
+- Git-backed sibling workflows now compare their vendored `.devcontainer` files and generated
+  allowlist with LockBox's public canonical `main` branch. Brain is treated as a second VaultLens
+  checkout so its generated allowlist uses the same stable repository label.
+- The dependency-free staged-secret audit remains the local pre-commit gate, with gitleaks kept as
+  the broader CI backstop. The separate Squid parse job and entrypoint certificate/database
+  recovery remain in place because they provide faster configuration diagnostics and a cheap
+  runtime fail-safe, respectively.
+
 ### Fixed — agent engineering checks
 - Self-only vendoring checks now cover both in-repository containers. Missing canonical inputs
   fail before any target write. `sync.sh --target=/absolute/managed/.devcontainer` allows a
