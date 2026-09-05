@@ -185,7 +185,7 @@ for dst in "${EGRESS_DEVCONTAINERS[@]}"; do
     skipped=$((skipped + 1))
     continue
   fi
-  project="$(basename "$(dirname "$dst")")"
+  project="$(egress_project_label "$dst")"
 
   if [[ "$MODE" == check ]]; then
     # Verify-only: every vendored copy + the generated allowlist must already

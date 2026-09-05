@@ -30,10 +30,15 @@ class SyncTests(unittest.TestCase):
         for name in (".devcontainer", "sandbox/.devcontainer"):
             (self.root / name).mkdir(parents=True)
 
-    def run_sync(self, *args):
+    def run_sync(self, *args, extra_env=None):
         return subprocess.run(
             ["bash", str(self.root / "sync.sh"), *args],
-            env={**os.environ, "EGRESS_SELF_ONLY": "1", "EGRESS_REPO": str(self.root)},
+            env={
+                **os.environ,
+                "EGRESS_SELF_ONLY": "1",
+                "EGRESS_REPO": str(self.root),
+                **(extra_env or {}),
+            },
             capture_output=True,
             text=True,
         )
@@ -63,6 +68,14 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue((self.root / ".devcontainer/squid.conf").is_file())
         self.assertFalse((self.root / "sandbox/.devcontainer/squid.conf").exists())
+
+    def test_brain_checkout_uses_stable_vaultlens_label(self):
+        brain = self.root / ".devcontainer"
+        result = self.run_sync(extra_env={"BRAIN_DC": str(brain)})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        allowlist = (brain / "allowlist.txt").read_text()
+        self.assertIn("VaultLens/allowlist.extra.txt", allowlist)
+        self.assertNotIn(f"{self.root.name}/allowlist.extra.txt", allowlist)
 
 
 if __name__ == "__main__":

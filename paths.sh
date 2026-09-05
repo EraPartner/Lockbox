@@ -44,3 +44,16 @@ if [[ "${EGRESS_SELF_ONLY:-0}" == 1 ]]; then
   # shellcheck disable=SC2034  # consumed by scripts that source this file
   EGRESS_DEVCONTAINERS=("$EGRESS_REPO/.devcontainer" "$EGRESS_REPO/sandbox/.devcontainer")
 fi
+
+# The Brain path is a second checkout of the VaultLens repository. Generated
+# allowlist comments are tracked content, so both checkouts must use the same
+# stable repository label instead of deriving different labels from their local
+# parent directory names.
+egress_project_label() {
+  local dst="$1"
+  if [[ "$dst" == "$BRAIN_DC" ]]; then
+    printf '%s\n' VaultLens
+  else
+    basename "$(dirname "$dst")"
+  fi
+}
