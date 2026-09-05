@@ -3,10 +3,13 @@
 Run this before proposing or committing a change; it encodes LockBox's review
 knowledge as a checklist so review catches egress/isolation regressions
 automatically. See `AGENTS.md` for the why behind each item.
+Apply development checks according to the risk levels in `AGENTS.md`. Mark irrelevant checks as
+not applicable and unavailable checks as not run. Publication steps below apply only when
+publication is authorized; they are not prerequisites for proposing a worktree diff.
 
 ## Secrets & safety
-- [ ] `./audit.sh` (or `make audit`) passes — no `sk-ant-`/`ghp_`/`github_pat_`/AWS/
-      Slack/Stripe/npm/GitLab token value or `BEGIN … PRIVATE KEY` block in the index.
+- [ ] Review the changed files for credentials. `./audit.sh` (or `make audit`) scans the index,
+      so a passing result does not verify unstaged changes. Do not stage files just to run it.
 - [ ] No private-key file added (`id_rsa`, `id_ed25519`, `*.key`, or a `*.pem` whose
       content is a private key — `audit.sh` gates `.pem` on content).
 - [ ] No credential baked into a script, Dockerfile, or launcher. Claude uses
@@ -37,22 +40,30 @@ automatically. See `AGENTS.md` for the why behind each item.
 ## Tests & validation
 - [ ] `shellcheck *.sh .devcontainer/bin/* sandbox/.devcontainer/bin/*` clean;
       `bash -n` parses every changed script.
-- [ ] `make check` (`./sync.sh --check`) and `make audit` (`./audit.sh`) pass locally.
+- [ ] `make check` passes. Run `make audit` for medium/high-risk changes, while reporting its
+      index-only coverage separately from the worktree review.
 - [ ] If `squid.conf` changed: `squid -k parse` passes.
 - [ ] For firewall/proxy/capability/mount changes: `make test`
       (`./test/egress-smoke.sh`) BOOTED the image and asserted the lock enforces
       (needs a container runtime — run on the HOST, not inside a sandbox).
-- [ ] Rebuilt the affected container(s) (`LOCKBOX_REBUILD=1` / `DEV_SANDBOX_REBUILD=1`
+- [ ] For medium/high-risk changes, rebuilt the affected container(s) (`LOCKBOX_REBUILD=1` / `DEV_SANDBOX_REBUILD=1`
       / the sibling `*_REBUILD=1`) and ran `bash .devcontainer/bin/doctor` inside.
 - [ ] Trust CI's required **CI Complete** check (shell, secrets, gitleaks, vendored,
       hadolint, squid parse, egress-test, trivy) — don't merge around a red gate.
 
 ## Hygiene
-- [ ] `make setup` was run once in this clone (else the pre-commit leak/drift gate is
-      silently skipped — git doesn't carry `core.hooksPath`).
-- [ ] Signed commit (repo signs via the Secure-Enclave ssh key; `commit.gpgsign=true`),
-      published through the separate `git-agent` LockBox container to `main`, with a clear
-      what+why message.
 - [ ] Docs updated when behavior changed (`README.md` / `.devcontainer/README.md` /
-      `CHANGELOG.md` / `CLAUDE.md`); `VERSION` bumped + `./sync.sh` re-run + `v<VERSION>`
-      tag when cutting a release.
+      `CHANGELOG.md` / `AGENTS.md`). Release preparation includes `VERSION` and `./sync.sh`;
+      the release tag belongs to the authorized publication workflow.
+- [ ] Leave a focused worktree diff with checks and outstanding host validation recorded.
+
+## Authorized publication only
+
+- [ ] In the separate `git-agent` LockBox container, verify the publication clone has the
+      tracked pre-commit leak/drift gate enabled before committing. Git does not carry
+      `core.hooksPath` across clones; setup belongs to the publication environment.
+- [ ] Review and stage explicit paths there, then run the index secret audit before creating
+      the signed commit with a clear what+why message. Publish to the authorized branch and
+      create `v<VERSION>` only when releasing.
+- [ ] For Codex cloud, use the platform-managed publication path in `AGENTS.md` instead of
+      local staging or signing. Required checks and approvals must pass before an authorized merge.
