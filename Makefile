@@ -17,6 +17,7 @@ check: ## Verify vendored copies, allowlists, required tools, and pins are in sy
 	./sync.sh --check
 	./bump-pins.sh --check
 	./test/provider-parity.sh
+	python3 test/test-sync.py
 
 provider-check: ## Verify Claude/Codex entry points retain the same shared architecture
 	./test/provider-parity.sh

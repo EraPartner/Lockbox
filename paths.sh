@@ -36,11 +36,11 @@ EGRESS_DEVCONTAINERS=(
 )
 
 # CI / self-check: with EGRESS_SELF_ONLY=1, restrict the target list to the in-repo
-# sandbox devcontainer only. The sibling fleet repos aren't checked out in CI, so
+# two devcontainers only. The sibling fleet repos aren't checked out in CI, so
 # `EGRESS_SELF_ONLY=1 ./sync.sh --check` lets CI verify THIS repo's own vendored
 # copies AND its regenerated allowlist (via the same gen_allowlist, no divergence)
 # without needing the whole fleet side-by-side.
 if [[ "${EGRESS_SELF_ONLY:-0}" == 1 ]]; then
   # shellcheck disable=SC2034  # consumed by scripts that source this file
-  EGRESS_DEVCONTAINERS=("$EGRESS_REPO/sandbox/.devcontainer")
+  EGRESS_DEVCONTAINERS=("$EGRESS_REPO/.devcontainer" "$EGRESS_REPO/sandbox/.devcontainer")
 fi

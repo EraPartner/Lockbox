@@ -41,11 +41,13 @@ sha256_of() {
 #                    Writes nothing. Good as a pre-commit gate.
 MODE=sync
 ALLOW_MISSING=0
+TARGET=""
 for arg in "$@"; do
   case "$arg" in
     --check)         MODE=check ;;
     --allow-missing) ALLOW_MISSING=1 ;;
-    -h|--help)       echo "usage: sync.sh [--check] [--allow-missing]"; exit 0 ;;
+    --target=*)     TARGET="${arg#--target=}" ;;
+    -h|--help)       echo "usage: sync.sh [--check] [--allow-missing] [--target=/absolute/managed/.devcontainer]"; exit 0 ;;
     *) echo "sync: unknown arg '$arg' (use --check, --allow-missing)" >&2; exit 2 ;;
   esac
 done
@@ -53,6 +55,14 @@ done
 [[ -f "$BASE" ]] || { echo "sync: missing base-allowlist.txt at $BASE" >&2; exit 1; }
 # shellcheck source=paths.sh
 source "$HERE/paths.sh"
+if [[ -n "$TARGET" ]]; then
+  found=0
+  for dst in "${EGRESS_DEVCONTAINERS[@]}"; do
+    if [[ "$TARGET" == "$dst" ]]; then found=1; break; fi
+  done
+  (( found )) || { echo "sync: ERROR target is not in the managed fleet: $TARGET" >&2; exit 2; }
+  EGRESS_DEVCONTAINERS=("$TARGET")
+fi
 
 # Effective (non-comment, non-blank) lines of a file — the host set used by the
 # fail-closed host-count safety check in gen_allowlist and the "N hosts" sync message
@@ -147,6 +157,15 @@ VENDORED=()
 while IFS= read -r _vf; do VENDORED+=("$_vf"); done < <(domains "$HERE/vendored-files.txt")
 (( ${#VENDORED[@]} > 0 )) || { echo "sync: ERROR no vendored files listed in $HERE/vendored-files.txt" >&2; exit 1; }
 
+# Validate the entire manifest before writing any target. A missing canonical
+# input must never silently remove a file from the drift check.
+for f in "${VENDORED[@]}"; do
+  [[ "$f" != */* && "$f" != . && "$f" != .. && -f "$HERE/$f" ]] || {
+    echo "sync: ERROR missing or invalid canonical input: $f" >&2
+    exit 1
+  }
+done
+
 # A vendored reference copy is TARGET-INDEPENDENT (canonical content + version +
 # canonical SHA-256), so generate each one ONCE up front. Regenerating inside the
 # target loop ran gen_vendored — and its sha256_of, a ~40-60ms Perl `shasum` startup
@@ -156,7 +175,6 @@ while IFS= read -r _vf; do VENDORED+=("$_vf"); done < <(domains "$HERE/vendored-
 REF_DIR="$(mktemp -d)" || { echo "sync: ERROR mktemp -d failed" >&2; exit 1; }
 trap 'rm -rf "$REF_DIR"' EXIT
 for f in "${VENDORED[@]}"; do
-  [[ -f "$HERE/$f" ]] || continue
   gen_vendored "$HERE/$f" "$REF_DIR/$f"
 done
 

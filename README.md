@@ -125,7 +125,7 @@ inside a managed `.devcontainer`.
 | `launcher-common.sh` | Shared host-side launcher, staging, mount, and cleanup helpers |
 | `vendored-files.txt` | Manifest of files copied into each managed sandbox |
 | `paths.sh` | Authoritative list of managed `.devcontainer` directories |
-| `sync.sh` | Vendors canonical files and generates effective allowlists |
+| `sync.sh` | Vendors canonical files and generates effective allowlists; `--target=/absolute/managed/.devcontainer` restricts regeneration to one registered target |
 | `audit.sh` | Scans the Git index for secrets and private keys |
 | `tool-pins.env` | Reviewed versions and hashes for baked tools |
 | `bump-pins.sh` | Reports, validates, and deliberately updates tool pins |
