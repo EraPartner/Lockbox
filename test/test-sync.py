@@ -25,6 +25,7 @@ class SyncTests(unittest.TestCase):
             "init-firewall.sh",
             "squid.conf",
             "launcher-common.sh",
+            "claude-stage-items.txt",
         ):
             shutil.copy2(ROOT / name, self.root / name)
         for name in (".devcontainer", "sandbox/.devcontainer"):

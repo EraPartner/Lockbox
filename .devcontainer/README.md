@@ -149,6 +149,14 @@ launcher runs it on every start and **aborts fail-closed** on fingerprint drift 
 if the checker is missing (a stale pre-pin image) — rebuild to re-pin
 (`LOCKBOX_REBUILD=1 lockbox-claude`).
 
+The separate generic `sandbox/.devcontainer/bin/dev` launcher caches a successful
+full check for the current running container boot. Its root-owned `/run` record is
+bound to the boot identifier, verifier, pin manifest, service identity, and clean
+`PATH`. A missing, stale, malformed, or writable record is a cache miss; the full
+absolute-path verifier then runs with startup hooks and pin overrides cleared.
+Verifier failure still aborts, while cache publication failure only loses the
+optimization for the next launch.
+
 **Isolation.** The container runs as the non-root `dev` user with **no sudo** and
 all setuid/setgid bits stripped image-wide. Caps: `--cap-drop ALL`, then re-add
 only `NET_ADMIN, CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID` (entrypoint

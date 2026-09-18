@@ -30,7 +30,11 @@ done
 # growing separate credential-handling implementations again.
 require_literal .devcontainer/bin/agent 'sandbox_ensure_codex_login'
 require_literal sandbox/.devcontainer/bin/dev 'sandbox_ensure_codex_login'
+require_literal sandbox/.devcontainer/bin/dev 'sandbox_verify_pins_cached "$NAME" dev'
+require_literal sandbox/.devcontainer/bin/dev '/usr/local/bin/dev-sandbox-verify-pins'
+require_literal sandbox/.devcontainer/bin/dev '/usr/local/share/dev-sandbox/binary-pins.txt'
 require_literal launcher-common.sh 'sandbox_ensure_codex_login()'
+require_literal launcher-common.sh 'sandbox_verify_pins_cached()'
 require_literal launcher-common.sh 'refusing unsanitized ~/.claude.json because jq is unavailable'
 if grep -Fq 'cp "$HOME/.claude.json"' launcher-common.sh; then
   fail "Claude staging retains a raw ~/.claude.json fallback"

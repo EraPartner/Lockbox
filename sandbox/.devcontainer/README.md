@@ -78,6 +78,11 @@ own overlay; they are deliberately not in the fleet-wide base.
   at build; `bin/dev` aborts if any drift before opening an agent. A real upgrade
   trips this — rebuild to re-pin with the selected provider, for example:
   `DEV_SANDBOX_REBUILD=1 dev-codex`.
+  After one successful full check, the launcher may reuse a root-owned `/run`
+  record for that running container boot. It is bound to the verifier, exact
+  nine-entry manifest, service identity, clean `PATH`, and boot identifier. Old
+  images without the cache protocol keep the full per-launch fail-closed check
+  and cannot receive a cache record.
 - Workspace is RW and **no push credential** is present, so a compromised agent
   can alter local files but cannot push or exfiltrate beyond the allowlist.
 - **Host-executed git paths are locked RO.** Git hooks run on your *Mac* (you

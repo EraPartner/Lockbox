@@ -8,6 +8,15 @@ every vendored copy, so a baked container self-identifies its egress-lock genera
 
 ## [Unreleased]
 
+### Changed — sandbox launch path
+- The generic sandbox caches a successful binary-pin verification for one running
+  container boot in a root-owned `/run` record. Cache hits remain bound to the
+  verifier, manifest, service identity, and clean execution environment; cold,
+  stale, or insecure states still run the full checker and fail closed.
+- Claude staging membership now lives in the vendored
+  `claude-stage-items.txt`; both the Bash launcher and dotfiles fish sync read and
+  validate that file instead of maintaining separate hardcoded lists.
+
 ### Changed — TODO review
 - Claude credential forwarding now returns as soon as a Keychain token is added, instead of
   rescanning the launch environment to rediscover the flag it just appended.

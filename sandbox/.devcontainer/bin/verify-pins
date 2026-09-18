@@ -11,8 +11,36 @@ set -uo pipefail
 
 PINFILE="${DEV_SANDBOX_PINFILE:-/usr/local/share/dev-sandbox/binary-pins.txt}"
 quiet=0
+if [[ "${1:-}" == "--print-cache-protocol" ]]; then
+  printf '%s\n' 'lockbox-verify-pins-cache-v1'
+  exit 0
+fi
 [[ "${1:-}" == "--quiet" ]] && quiet=1
 say() { (( quiet )) || echo "$@"; }
+
+# A cache hit is safe only while the sandbox user cannot replace a pinned file.
+# Validate both the lexical path (including any root-owned symlink) and its fully
+# resolved target. Every non-symlink component must be owned by root and not be
+# group/world-writable; symlink mode bits are ignored because Linux does not use
+# them for access control, but the link itself must still be root-owned.
+secure_root_chain() {
+  local original="$1" resolved current uid perms
+  [[ "$original" == /* ]] || return 1
+  resolved="$(readlink -f -- "$original" 2>/dev/null)" || return 1
+  for current in "$original" "$resolved"; do
+    while :; do
+      uid="$(stat -c %u -- "$current" 2>/dev/null)" || return 1
+      [[ "$uid" == 0 ]] || return 1
+      if [[ ! -L "$current" ]]; then
+        perms="$(stat -c %a -- "$current" 2>/dev/null)" || return 1
+        (( (8#$perms & 8#22) == 0 )) || return 1
+      fi
+      [[ "$current" == / ]] && break
+      current="${current%/*}"
+      [[ -n "$current" ]] || current=/
+    done
+  done
+}
 
 if [[ ! -r "$PINFILE" ]]; then
   echo "verify-pins: pin manifest missing at $PINFILE — rebuild the image." >&2
@@ -20,8 +48,25 @@ if [[ ! -r "$PINFILE" ]]; then
 fi
 
 rc=0
-while IFS=$'\t' read -r name path want; do
+seen=' '
+count=0
+expected=' node npm claude codex bwrap gh git python3 safe-chain '
+while IFS=$'\t' read -r name path want extra; do
   [[ -z "${name:-}" || "${name#\#}" != "$name" ]] && continue
+  if [[ -n "${extra:-}" || ! "$name" =~ ^[a-zA-Z0-9._-]+$ || "$path" != /* || ! "$want" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "verify-pins: malformed pin manifest row for '${name:-unnamed}'" >&2
+    rc=1; continue
+  fi
+  if [[ "$expected" != *" $name "* ]]; then
+    echo "verify-pins: unexpected pinned tool: $name" >&2
+    rc=1; continue
+  fi
+  if [[ "$seen" == *" $name "* ]]; then
+    echo "verify-pins: duplicate pinned tool: $name" >&2
+    rc=1; continue
+  fi
+  seen+="$name "
+  count=$((count + 1))
   cur="$(type -P "$name" 2>/dev/null || true)"
   if [[ "$cur" != "$path" ]]; then
     echo "verify-pins: $name resolves to '${cur:-<none>}' but pinned path is '$path'" >&2
@@ -32,8 +77,23 @@ while IFS=$'\t' read -r name path want; do
     echo "verify-pins: $name FINGERPRINT DRIFT (pinned ${want:0:12}..., got ${got:0:12}...)" >&2
     rc=1; continue
   fi
+  if ! secure_root_chain "$path"; then
+    echo "verify-pins: $name path is not protected by root-owned, non-writable ancestry: $path" >&2
+    rc=1; continue
+  fi
   say "  ok  $name  ${want:0:12}..."
 done < "$PINFILE"
+
+if (( count != 9 )); then
+  echo "verify-pins: pin manifest is incomplete (expected 9 unique tools, found $count)" >&2
+  rc=1
+fi
+for name in node npm claude codex bwrap gh git python3 safe-chain; do
+  if [[ "$seen" != *" $name "* ]]; then
+    echo "verify-pins: required pin is missing: $name" >&2
+    rc=1
+  fi
+done
 
 if (( rc == 0 )); then
   say "verify-pins: all pinned binaries match."

@@ -1,0 +1,12 @@
+# Declarative host ~/.claude entries allowed into a sandbox staging directory.
+# One basename per line. Consumers reject paths, whitespace, and an empty list.
+settings.json
+keybindings.json
+CLAUDE.md
+agents
+rules
+commands
+skills
+status-line.sh
+statusline
+plugins

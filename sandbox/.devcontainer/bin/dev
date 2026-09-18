@@ -266,12 +266,16 @@ container exec --user dev "$NAME" bash -lc '
 EXEC_ENV=()
 if [[ "$AGENT" == claude ]]; then sandbox_forward_llm_creds "dev-sandbox-claude-code-token"; fi
 
-# --- 8) Launch-integrity gate (clean shell so safe-chain can't shadow paths) --
-# Invoke the gate by ABSOLUTE path, never by bare name: the dev-writable npm
-# prefix on PATH could otherwise hold a `dev-sandbox-verify-pins` stub that
-# `exit 0`s, silently defeating the integrity check. The pinned copy lives at
-# /usr/local/bin (root-owned, not dev-writable).
-if ! container exec --user dev -e BASH_ENV= "$NAME" /usr/local/bin/dev-sandbox-verify-pins --quiet; then
+# --- 8) Launch-integrity gate (cached for this running container boot) --------
+# The canonical helper accepts only an exact root-owned cache record bound to
+# the boot, verifier, manifest, service identity, and protocol. On a miss it
+# invokes the absolute baked checker with startup hooks and pinfile overrides
+# cleared, then atomically publishes the cache as root. A cold/stale image still
+# fails closed because a missing checker or manifest can never produce a record.
+if ! sandbox_verify_pins_cached "$NAME" dev \
+    /usr/local/bin/dev-sandbox-verify-pins \
+    /usr/local/share/dev-sandbox/binary-pins.txt \
+    DEV_SANDBOX_PINFILE dev-sandbox; then
   echo "dev: ABORT — binary fingerprint drift in the sandbox (see above)." >&2
   echo "  If you intentionally upgraded a tool, rebuild to re-pin: DEV_SANDBOX_REBUILD=1 $LAUNCHER" >&2
   exit 1

@@ -8,3 +8,4 @@
 init-firewall.sh
 squid.conf
 launcher-common.sh
+claude-stage-items.txt

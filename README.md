@@ -123,6 +123,7 @@ inside a managed `.devcontainer`.
 | `squid.conf` | Canonical CONNECT-only SNI allowlist proxy |
 | `base-allowlist.txt` | Minimum hostname set shared by every managed sandbox |
 | `launcher-common.sh` | Shared host-side launcher, staging, mount, and cleanup helpers |
+| `claude-stage-items.txt` | Curated declarative entries allowed into Claude staging |
 | `vendored-files.txt` | Manifest of files copied into each managed sandbox |
 | `paths.sh` | Authoritative list of managed `.devcontainer` directories |
 | `sync.sh` | Vendors canonical files and generates effective allowlists; `--target=/absolute/managed/.devcontainer` restricts regeneration to one registered target |
