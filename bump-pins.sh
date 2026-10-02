@@ -44,32 +44,47 @@ source "$HERE/paths.sh"
 DOCKERFILES=()
 MISSING=()
 for _d in "${EGRESS_DEVCONTAINERS[@]}"; do
-  if [[ -f "$_d/Dockerfile" ]]; then DOCKERFILES+=("$_d/Dockerfile")
-  else MISSING+=("$_d")
+  if [[ -f "$_d/Dockerfile" ]]; then
+    DOCKERFILES+=("$_d/Dockerfile")
+  else
+    MISSING+=("$_d")
   fi
 done
-(( ${#DOCKERFILES[@]} > 0 )) || { echo "bump-pins: no managed Dockerfiles found (check paths.sh)" >&2; exit 1; }
+((${#DOCKERFILES[@]} > 0)) || {
+  echo "bump-pins: no managed Dockerfiles found (check paths.sh)" >&2
+  exit 1
+}
 
 MODE=dryrun
 for arg in "$@"; do
   case "$arg" in
-    --check)   MODE=check ;;
-    --report)  MODE=report ;;
-    --write)   MODE="write" ;;
-    -h|--help) sed -n '2,32p' "${BASH_SOURCE[0]}"; exit 0 ;;
-    *) echo "bump-pins: unknown arg '$arg' (use --check, --report, --write)" >&2; exit 2 ;;
+  --check) MODE=check ;;
+  --report) MODE=report ;;
+  --write) MODE="write" ;;
+  -h | --help)
+    sed -n '2,32p' "${BASH_SOURCE[0]}"
+    exit 0
+    ;;
+  *)
+    echo "bump-pins: unknown arg '$arg' (use --check, --report, --write)" >&2
+    exit 2
+    ;;
   esac
 done
 
-[[ -f "$PINS" ]] || { echo "bump-pins: missing $PINS" >&2; exit 1; }
+[[ -f "$PINS" ]] || {
+  echo "bump-pins: missing $PINS" >&2
+  exit 1
+}
 # shellcheck source=tool-pins.env disable=SC1091
 source "$PINS"
 
-: "${COOLDOWN_DAYS:=7}"
+: "${COOLDOWN_DAYS:=0}"
 
 # Portable SHA-256 (Linux CI has sha256sum; macOS host has shasum).
 sha256_of() {
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | cut -d' ' -f1
   else shasum -a 256 "$1" | cut -d' ' -f1; fi
 }
 
@@ -78,7 +93,11 @@ arg_of() { sed -n "s/^ARG ${2}=\(.*\)$/\1/p" "$1" | head -1; }
 
 # Short display name for a Dockerfile path: "<project>/.devcontainer/Dockerfile".
 # Targets now span sibling repos, so a $HERE-relative strip is not enough.
-label() { local d; d="$(dirname "$1")"; echo "$(basename "$(dirname "$d")")/$(basename "$d")/Dockerfile"; }
+label() {
+  local d
+  d="$(dirname "$1")"
+  echo "$(basename "$(dirname "$d")")/$(basename "$d")/Dockerfile"
+}
 
 # ---------------------------------------------------------------------------
 # --check — offline drift gate: tool-pins.env must equal both Dockerfiles.
@@ -98,11 +117,11 @@ if [[ "$MODE" == check ]]; then
   DOCKERFILE_MAX_BYTES=14801
   for df in "${DOCKERFILES[@]}"; do
     [[ -f "$df" ]] || continue
-    sz=$(wc -c < "$df" | tr -d ' ')
-    if (( sz > DOCKERFILE_MAX_BYTES )); then
+    sz=$(wc -c <"$df" | tr -d ' ')
+    if ((sz > DOCKERFILE_MAX_BYTES)); then
       echo "TOO BIG: $(label "$df") is ${sz} bytes (> ${DOCKERFILE_MAX_BYTES}); apple/container will fail with \"Stream unexpectedly closed\". Trim comments." >&2
       rc=1
-    elif (( sz > DOCKERFILE_MAX_BYTES - 512 )); then
+    elif ((sz > DOCKERFILE_MAX_BYTES - 512)); then
       echo "WARN: $(label "$df") is ${sz} bytes — only $((DOCKERFILE_MAX_BYTES - sz)) left before apple/container's practical build ceiling." >&2
     fi
   done
@@ -113,47 +132,57 @@ if [[ "$MODE" == check ]]; then
     dc="$(dirname "$df")"
     apt_block="$(sed -n '/apt-get install -y --no-install-recommends \\/,/rm -rf \/var\/lib\/apt\/lists/p' "$df")"
     if ! grep -Eq '(^|[[:space:]])bubblewrap[[:space:]]' <<<"$apt_block"; then
-      echo "DRIFT: $(label "$df") does not install bubblewrap (required by Codex)" >&2; rc=1
+      echo "DRIFT: $(label "$df") does not install bubblewrap (required by Codex)" >&2
+      rc=1
     fi
     if ! grep -Eq 'for b in .* bwrap([[:space:]]|;)' "$df"; then
-      echo "DRIFT: $(label "$df") does not fingerprint bwrap in its binary pin manifest" >&2; rc=1
+      echo "DRIFT: $(label "$df") does not fingerprint bwrap in its binary pin manifest" >&2
+      rc=1
     fi
     if [[ ! -f "$dc/bin/doctor" ]] || ! grep -Eq '(^|[[:space:]])bwrap([[:space:]]|"|$)' "$dc/bin/doctor"; then
-      echo "DRIFT: $(label "$df") doctor does not check bwrap" >&2; rc=1
+      echo "DRIFT: $(label "$df") doctor does not check bwrap" >&2
+      rc=1
     fi
   done
   # REQUIRED in every managed Dockerfile. Node/Python verify against upstream
   # SHASUMS; Claude is currently fleet-wide.
   MIRRORED=(NODE_VERSION PY_RELEASE PY_VERSION CLAUDE_CODE_VERSION
-            CLAUDE_CODE_SHA256_ARM64 CLAUDE_CODE_SHA256_AMD64)
+    CLAUDE_CODE_SHA256_ARM64 CLAUDE_CODE_SHA256_AMD64)
   # OPTIONAL: Codex and safe-chain are currently baked by only some images.
   OPTIONAL_MIRRORED=(CODEX_VERSION CODEX_SHA256_ARM64 CODEX_SHA256_AMD64 SAFE_CHAIN_VERSION)
   for df in "${DOCKERFILES[@]}"; do
-    [[ -f "$df" ]] || { echo "bump-pins: MISSING Dockerfile $df" >&2; rc=1; continue; }
+    [[ -f "$df" ]] || {
+      echo "bump-pins: MISSING Dockerfile $df" >&2
+      rc=1
+      continue
+    }
     for k in "${MIRRORED[@]}"; do
       want="${!k:-}"
       got="$(arg_of "$df" "$k")"
       if [[ -z "$got" ]]; then
-        echo "DRIFT: $(label "$df") has no 'ARG $k=' (expected $want)" >&2; rc=1
+        echo "DRIFT: $(label "$df") has no 'ARG $k=' (expected $want)" >&2
+        rc=1
       elif [[ "$got" != "$want" ]]; then
-        echo "DRIFT: $(label "$df") $k=$got but tool-pins.env says $want" >&2; rc=1
+        echo "DRIFT: $(label "$df") $k=$got but tool-pins.env says $want" >&2
+        rc=1
       fi
     done
     for k in "${OPTIONAL_MIRRORED[@]}"; do
       want="${!k:-}"
       got="$(arg_of "$df" "$k")"
       if [[ -n "$got" && "$got" != "$want" ]]; then
-        echo "DRIFT: $(label "$df") $k=$got but tool-pins.env says $want" >&2; rc=1
+        echo "DRIFT: $(label "$df") $k=$got but tool-pins.env says $want" >&2
+        rc=1
       fi
     done
   done
-  if (( ${#MISSING[@]} > 0 )); then
+  if ((${#MISSING[@]} > 0)); then
     # Not fatal: sibling fleet repos are absent in CI and on other machines. sync.sh
     # treats a missing target as fatal because a dropped container silently loses the
     # egress lock; a missing Dockerfile here only means its pins were not checked.
     echo "note: ${#MISSING[@]} managed devcontainer(s) not present on this machine; pins unchecked for them." >&2
   fi
-  if (( rc == 0 )); then
+  if ((rc == 0)); then
     echo "✓ pins: tool-pins.env and required Codex tools match all ${#DOCKERFILES[@]} Dockerfiles."
   else
     echo "✗ pins: Dockerfile pins or required Codex tools diverged. Run ./bump-pins.sh --write, or hand-fix." >&2
@@ -171,8 +200,12 @@ fi
 npm_pick() {
   local pkg="$1" meta
   meta="$(mktemp)"
-  curl -fsSLo "$meta" "https://registry.npmjs.org/${pkg}" \
-    || { echo "bump-pins: ERROR fetching registry metadata for $pkg" >&2; rm -f "$meta"; exit 1; }
+  curl -fsSLo "$meta" "https://registry.npmjs.org/${pkg}" ||
+    {
+      echo "bump-pins: ERROR fetching registry metadata for $pkg" >&2
+      rm -f "$meta"
+      exit 1
+    }
   COOLDOWN_DAYS="$COOLDOWN_DAYS" python3 - "$meta" <<'PY'
 import json, os, sys, datetime
 d = json.load(open(sys.argv[1]))
@@ -213,14 +246,23 @@ PY
 # would change. (install.cjs does no network I/O; it only copies.)
 claude_binary_sha() {
   local version="$1" plat="$2" tgz dir out
-  tgz="$(mktemp)"; dir="$(mktemp -d)"
+  tgz="$(mktemp)"
+  dir="$(mktemp -d)"
   curl -fsSLo "$tgz" \
-    "https://registry.npmjs.org/@anthropic-ai/claude-code-${plat}/-/claude-code-${plat}-${version}.tgz" \
-    || { echo "bump-pins: ERROR fetching claude-code-${plat}@${version}" >&2; rm -rf "$tgz" "$dir"; exit 1; }
+    "https://registry.npmjs.org/@anthropic-ai/claude-code-${plat}/-/claude-code-${plat}-${version}.tgz" ||
+    {
+      echo "bump-pins: ERROR fetching claude-code-${plat}@${version}" >&2
+      rm -rf "$tgz" "$dir"
+      exit 1
+    }
   tar -xzf "$tgz" -C "$dir"
   # The platform package ships exactly one executable payload.
   out="$(find "$dir" -type f -name 'claude*' -size +1M | head -1)"
-  [[ -n "$out" ]] || { echo "bump-pins: ERROR no binary found in claude-code-${plat}@${version}" >&2; rm -rf "$tgz" "$dir"; exit 1; }
+  [[ -n "$out" ]] || {
+    echo "bump-pins: ERROR no binary found in claude-code-${plat}@${version}" >&2
+    rm -rf "$tgz" "$dir"
+    exit 1
+  }
   sha256_of "$out"
   rm -rf "$tgz" "$dir"
 }
@@ -229,13 +271,22 @@ claude_binary_sha() {
 # not the small JavaScript dispatcher in the base package.
 codex_binary_sha() {
   local version="$1" plat="$2" tgz dir out
-  tgz="$(mktemp)"; dir="$(mktemp -d)"
+  tgz="$(mktemp)"
+  dir="$(mktemp -d)"
   curl -fsSLo "$tgz" \
-    "https://registry.npmjs.org/@openai/codex/-/codex-${version}-${plat}.tgz" \
-    || { echo "bump-pins: ERROR fetching codex@${version}-${plat}" >&2; rm -rf "$tgz" "$dir"; exit 1; }
+    "https://registry.npmjs.org/@openai/codex/-/codex-${version}-${plat}.tgz" ||
+    {
+      echo "bump-pins: ERROR fetching codex@${version}-${plat}" >&2
+      rm -rf "$tgz" "$dir"
+      exit 1
+    }
   tar -xzf "$tgz" -C "$dir"
   out="$(find "$dir" -type f -path '*/bin/codex' | head -1)"
-  [[ -n "$out" ]] || { echo "bump-pins: ERROR no binary found in codex@${version}-${plat}" >&2; rm -rf "$tgz" "$dir"; exit 1; }
+  [[ -n "$out" ]] || {
+    echo "bump-pins: ERROR no binary found in codex@${version}-${plat}" >&2
+    rm -rf "$tgz" "$dir"
+    exit 1
+  }
   sha256_of "$out"
   rm -rf "$tgz" "$dir"
 }
@@ -250,8 +301,11 @@ read -r SC_PICK SC_LATEST SC_LATEST_DATE SC_AGE < <(npm_pick "@aikidosec/safe-ch
 # and flagging it as "BEHIND" would train the reader to ignore this report. The
 # newest major is surfaced separately as information only.
 NODE_IDX="$(mktemp)"
-curl -fsSLo "$NODE_IDX" https://nodejs.org/dist/index.json \
-  || { echo "bump-pins: ERROR fetching nodejs.org release index" >&2; exit 1; }
+curl -fsSLo "$NODE_IDX" https://nodejs.org/dist/index.json ||
+  {
+    echo "bump-pins: ERROR fetching nodejs.org release index" >&2
+    exit 1
+  }
 read -r NODE_LATEST NODE_NEWEST_MAJOR < <(
   NODE_VERSION="$NODE_VERSION" python3 - "$NODE_IDX" <<'PY'
 import json, os, sys
@@ -291,22 +345,22 @@ fi
 # ---------------------------------------------------------------------------
 # --write / dry-run — resolve, hash, rewrite.
 # ---------------------------------------------------------------------------
-if [[ "$CC_PICK" == "$CLAUDE_CODE_VERSION" \
-   && "$CX_PICK" == "$CODEX_VERSION" \
-   && "$SC_PICK" == "$SAFE_CHAIN_VERSION" \
-   && "$NODE_LATEST" == "$NODE_VERSION" ]]; then
+if [[ "$CC_PICK" == "$CLAUDE_CODE_VERSION" &&
+  "$CX_PICK" == "$CODEX_VERSION" &&
+  "$SC_PICK" == "$SAFE_CHAIN_VERSION" &&
+  "$NODE_LATEST" == "$NODE_VERSION" ]]; then
   echo "Already at the newest cooldown-eligible pins (claude-code $CC_PICK, codex $CX_PICK, safe-chain $SC_PICK, node $NODE_VERSION). Nothing to do."
   exit 0
 fi
 
-[[ "$CC_PICK"     != "$CLAUDE_CODE_VERSION" ]] && echo "claude-code : $CLAUDE_CODE_VERSION -> $CC_PICK  (${CC_AGE}d old; latest is $CC_LATEST, held by cooldown)"
-[[ "$CX_PICK"     != "$CODEX_VERSION"       ]] && echo "codex       : $CODEX_VERSION -> $CX_PICK  (${CX_AGE}d old; latest is $CX_LATEST, held by cooldown)"
-[[ "$SC_PICK"     != "$SAFE_CHAIN_VERSION"  ]] && echo "safe-chain  : $SAFE_CHAIN_VERSION -> $SC_PICK  (${SC_AGE}d old; latest is $SC_LATEST)"
+[[ "$CC_PICK" != "$CLAUDE_CODE_VERSION" ]] && echo "claude-code : $CLAUDE_CODE_VERSION -> $CC_PICK  (${CC_AGE}d old; latest is $CC_LATEST, held by cooldown)"
+[[ "$CX_PICK" != "$CODEX_VERSION" ]] && echo "codex       : $CODEX_VERSION -> $CX_PICK  (${CX_AGE}d old; latest is $CX_LATEST, held by cooldown)"
+[[ "$SC_PICK" != "$SAFE_CHAIN_VERSION" ]] && echo "safe-chain  : $SAFE_CHAIN_VERSION -> $SC_PICK  (${SC_AGE}d old; latest is $SC_LATEST)"
 # Node stays WITHIN the pinned major line — a major bump changes the platform and
 # must be a human decision, so it is reported but never auto-applied. No separate
 # hash pin is needed: the Dockerfiles verify the tarball against nodejs.org's own
 # SHASUMS256.txt for this exact version at build time.
-[[ "$NODE_LATEST" != "$NODE_VERSION"        ]] && echo "node        : $NODE_VERSION -> $NODE_LATEST  (within ${NODE_VERSION%%.*}.x; newest major upstream ${NODE_NEWEST_MAJOR}.x NOT auto-applied)"
+[[ "$NODE_LATEST" != "$NODE_VERSION" ]] && echo "node        : $NODE_VERSION -> $NODE_LATEST  (within ${NODE_VERSION%%.*}.x; newest major upstream ${NODE_NEWEST_MAJOR}.x NOT auto-applied)"
 true
 
 if [[ "$CC_PICK" != "$CLAUDE_CODE_VERSION" ]]; then
@@ -341,33 +395,39 @@ fi
 set_pin() {
   local key="$1" val="$2" tmp
   tmp="$(mktemp "$HERE/.tool-pins.XXXXXX")"
-  sed "s|^${key}=.*$|${key}=${val}|" "$PINS" > "$tmp"
-  grep -q "^${key}=${val}$" "$tmp" || { echo "bump-pins: ERROR failed to set $key" >&2; rm -f "$tmp"; exit 1; }
-  chmod 0644 "$tmp"; mv "$tmp" "$PINS"
+  sed "s|^${key}=.*$|${key}=${val}|" "$PINS" >"$tmp"
+  grep -q "^${key}=${val}$" "$tmp" || {
+    echo "bump-pins: ERROR failed to set $key" >&2
+    rm -f "$tmp"
+    exit 1
+  }
+  chmod 0644 "$tmp"
+  mv "$tmp" "$PINS"
 }
-set_pin CLAUDE_CODE_VERSION      "$CC_PICK"
+set_pin CLAUDE_CODE_VERSION "$CC_PICK"
 set_pin CLAUDE_CODE_SHA256_ARM64 "$NEW_CC_ARM64"
 set_pin CLAUDE_CODE_SHA256_AMD64 "$NEW_CC_AMD64"
-set_pin CODEX_VERSION             "$CX_PICK"
-set_pin CODEX_SHA256_ARM64        "$NEW_CX_ARM64"
-set_pin CODEX_SHA256_AMD64        "$NEW_CX_AMD64"
-set_pin SAFE_CHAIN_VERSION       "$SC_PICK"
-set_pin NODE_VERSION             "$NODE_LATEST"
+set_pin CODEX_VERSION "$CX_PICK"
+set_pin CODEX_SHA256_ARM64 "$NEW_CX_ARM64"
+set_pin CODEX_SHA256_AMD64 "$NEW_CX_AMD64"
+set_pin SAFE_CHAIN_VERSION "$SC_PICK"
+set_pin NODE_VERSION "$NODE_LATEST"
 
 # Mirror into both Dockerfiles so a plain `container build` needs no --build-arg.
 for df in "${DOCKERFILES[@]}"; do
   [[ -f "$df" ]] || continue
   tmp="$(mktemp "$(dirname "$df")/.Dockerfile.XXXXXX")"
   sed -e "s|^ARG CLAUDE_CODE_VERSION=.*$|ARG CLAUDE_CODE_VERSION=${CC_PICK}|" \
-      -e "s|^ARG CLAUDE_CODE_SHA256_ARM64=.*$|ARG CLAUDE_CODE_SHA256_ARM64=${NEW_CC_ARM64}|" \
-      -e "s|^ARG CLAUDE_CODE_SHA256_AMD64=.*$|ARG CLAUDE_CODE_SHA256_AMD64=${NEW_CC_AMD64}|" \
-      -e "s|^ARG CODEX_VERSION=.*$|ARG CODEX_VERSION=${CX_PICK}|" \
-      -e "s|^ARG CODEX_SHA256_ARM64=.*$|ARG CODEX_SHA256_ARM64=${NEW_CX_ARM64}|" \
-      -e "s|^ARG CODEX_SHA256_AMD64=.*$|ARG CODEX_SHA256_AMD64=${NEW_CX_AMD64}|" \
-      -e "s|^ARG SAFE_CHAIN_VERSION=.*$|ARG SAFE_CHAIN_VERSION=${SC_PICK}|" \
-      -e "s|^ARG NODE_VERSION=.*$|ARG NODE_VERSION=${NODE_LATEST}|" \
-      "$df" > "$tmp"
-  chmod 0644 "$tmp"; mv "$tmp" "$df"
+    -e "s|^ARG CLAUDE_CODE_SHA256_ARM64=.*$|ARG CLAUDE_CODE_SHA256_ARM64=${NEW_CC_ARM64}|" \
+    -e "s|^ARG CLAUDE_CODE_SHA256_AMD64=.*$|ARG CLAUDE_CODE_SHA256_AMD64=${NEW_CC_AMD64}|" \
+    -e "s|^ARG CODEX_VERSION=.*$|ARG CODEX_VERSION=${CX_PICK}|" \
+    -e "s|^ARG CODEX_SHA256_ARM64=.*$|ARG CODEX_SHA256_ARM64=${NEW_CX_ARM64}|" \
+    -e "s|^ARG CODEX_SHA256_AMD64=.*$|ARG CODEX_SHA256_AMD64=${NEW_CX_AMD64}|" \
+    -e "s|^ARG SAFE_CHAIN_VERSION=.*$|ARG SAFE_CHAIN_VERSION=${SC_PICK}|" \
+    -e "s|^ARG NODE_VERSION=.*$|ARG NODE_VERSION=${NODE_LATEST}|" \
+    "$df" >"$tmp"
+  chmod 0644 "$tmp"
+  mv "$tmp" "$df"
   echo "updated $(label "$df")"
 done
 
