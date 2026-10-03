@@ -82,14 +82,18 @@ requires host Python 3.11 or newer.
 
 ## Quick start
 
-Enable the tracked pre-commit checks once after cloning:
+When operating Git directly on the host, enable the tracked pre-commit checks once
+after cloning:
 
 ```sh
 make setup
 ```
 
 Git does not preserve `core.hooksPath` across clones. Without this step, the tracked
-secret audit and vendoring drift check do not run before commits.
+secret audit and vendoring drift check do not run before host commits. Editing
+sandboxes leave Git metadata read-only. The separate `git-agent` publication
+environment keeps repository hooks disabled and reviews the explicit diff and
+validation evidence before staging, signing, committing, and pushing.
 
 To work on LockBox inside its own sandbox:
 
@@ -241,8 +245,8 @@ running. Piped standard input is forwarded for either provider.
 ## Toolchain pinning
 
 The in-repo images bake Claude Code, Codex, Node.js, Python, and safe-chain. They do not
-fetch the latest agent CLI at runtime. Updates are resolved during a reviewed rebuild,
-after a cooldown period, and the native agent binaries are verified by SHA-256.
+fetch the latest agent CLI at runtime. The pin updater resolves versions and hashes
+before a reviewed rebuild, and native agent binaries are verified by SHA-256.
 
 Useful targets:
 
@@ -252,12 +256,18 @@ Useful targets:
 | `make pins` | Resolve and write reviewed, cooldown-eligible versions and hashes |
 | `make pins-check` | Verify offline that pins match every managed image |
 
-The default cooldown is seven days. Node.js remains within its pinned major version;
-crossing a major version is a deliberate platform decision. Some operating-system
-packages are not version-pinned because mirrors remove old builds, so the launch gate
+The pin updater defaults to a zero-day release cooldown. `COOLDOWN_DAYS` in
+`tool-pins.env` controls the configured policy; updates still require review and
+validation before publication.
+Node.js remains within its pinned major version; crossing a major version is a
+deliberate platform decision. Some operating-system packages are not version-pinned
+because mirrors remove old builds, so the launch gate
 records and verifies the binaries present in the built image instead.
 
 ## Making a change
+
+Read [`REVIEW.md`](REVIEW.md) first. Ordinary editing sessions change and test the
+working tree only; publication belongs to the separate `git-agent` environment.
 
 For a canonical firewall, proxy, or launcher change:
 
@@ -271,6 +281,11 @@ make check
 make audit
 ```
 
+`make check` runs vendoring and pin checks plus provider parity, integrity-cache,
+configuration, startup-lock, mount-policy, doctor, and ClientHello regression checks.
+It requires Python 3.11 or newer. `make audit` checks the Git index, so review unstaged
+changes separately and do not stage files from an editing session merely to run it.
+
 For an allowlist change, edit the base or one target's overlay, then run the same sync
 and checks. Rebuild the affected sandbox and run its doctor command before relying on
 the new policy.
@@ -282,9 +297,18 @@ egress, also run the functional test on a host with a supported container runtim
 make test
 ```
 
-The smoke test confirms that the firewall sentinel exists, an off-allowlist host is
-blocked, an allowlisted host is reachable, and a non-CONNECT cleartext request is
-refused.
+The smoke test uses local fixtures to check packet and TLS policy, read-only mounts,
+native provider features, and refusal of non-CONNECT cleartext requests. Set
+`CHECK_INTERNET=1` to add external endpoint probes; those probes do not gate success.
+CI builds and boots both in-repo images. For generic launcher lifecycle changes, also run
+`make native-launcher-test` on an Apple Container host with the generic test image
+already built. Portable checks alone do not verify these runtime behaviors.
+
+Before handing off a diff, record the changed paths, their SHA-256 hashes, completed
+checks, and any required checks that could not run. After publication, confirm that
+the pull request has the required **CI Complete** status and no blocking review.
+Remove a pull request branch only after its work is merged or confirmed superseded,
+and check its current head before deletion.
 
 ## Integrating a managed sandbox
 
