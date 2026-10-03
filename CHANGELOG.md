@@ -8,6 +8,16 @@ every vendored copy, so a baked container self-identifies its egress-lock genera
 
 ## [Unreleased]
 
+### Changed — dependency maintenance and contributor guidance
+
+- Updated the generic sandbox's pinned Debian base digest and the pinned checkout,
+  hadolint, Buildx, build-push and CodeQL Actions from the dependency update proposals.
+  Preserved the current CI regression checks and both-image runtime matrix.
+- README now describes the pin updater's zero-day cooldown default, editing and publication
+  boundaries, index-only audit coverage, runtime checks and branch cleanup criteria.
+- The launcher readiness fixture consumes managed-policy input like the real
+  validator, preventing intermittent broken-pipe failures in authentication tests.
+
 ### Changed — portable deployment configuration
 
 - Removed personal dotfiles-generated cloud agreements and their CI checker.
