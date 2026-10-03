@@ -13,7 +13,7 @@
 # git push token / ssh signing socket is forwarded. Commit & push via the
 # dedicated `git-agent` sandbox; this box is for editing and running code.
 
-FROM debian:bookworm-slim@sha256:60eac759739651111db372c07be67863818726f754804b8707c90979bda511df
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
 
 ARG TZ=UTC
 ENV TZ="$TZ"
