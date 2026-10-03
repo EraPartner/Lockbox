@@ -62,7 +62,7 @@ RUN set -eux; \
     mkdir -p /usr/local/share/npm-global
 
 # --- Python 3.12 — python-build-standalone (prebuilt relocatable CPython) -----
-# Same approach as Vision: a pinned release asset (NOT resolved via the GitHub
+# Use a pinned release asset (NOT resolved via the GitHub
 # API, whose 60-req/hr unauthenticated limit fails parallel builds). python3 +
 # pip + venv + ssl, no compile. Bump by editing PY_RELEASE/PY_VERSION.
 ARG PY_RELEASE=20260510
@@ -77,7 +77,8 @@ RUN set -eux; \
     echo "${want}  /tmp/py.tar.gz" | sha256sum -c -; \
     rm /tmp/py-SHA256SUMS; \
     mkdir -p /opt/python; \
-    tar -xzf /tmp/py.tar.gz --strip-components=1 -C /opt/python; \
+    tar -xzf /tmp/py.tar.gz --strip-components=1 --no-same-owner -C /opt/python; \
+    chmod -R go-w /opt/python; \
     rm /tmp/py.tar.gz; \
     [ -x /opt/python/bin/python ] || ln -s python3 /opt/python/bin/python; \
     /opt/python/bin/python3 --version; /opt/python/bin/python3 -m venv --help >/dev/null
@@ -152,6 +153,11 @@ ENV DISABLE_AUTOUPDATER=1
 # prefix, so they never need write access to the pinned root prefix above.
 RUN install -d -o dev -g dev -m 0755 /home/dev/.npm-global
 ENV NPM_CONFIG_PREFIX=/home/dev/.npm-global
+ENV CLAUDE_CONFIG_DIR=/home/dev/.claude
+ENV CODEX_HOME=/home/dev/.codex
+RUN mkdir -p /home/dev/.agents /home/dev/.codex/skills \
+    && ln -s /home/dev/.codex/skills /home/dev/.agents/skills \
+    && chown -R dev:dev /home/dev/.agents /home/dev/.codex
 
 # Inbound ports default to NONE; bin/dev binds a per-run /etc/egress/inbound-ports
 # (RO) over this when DEV_SANDBOX_PORTS is set. The dir must exist for the bind.
@@ -205,6 +211,8 @@ COPY bin/doctor      /usr/local/bin/dev-sandbox-doctor
 COPY bin/verify-pins /usr/local/bin/dev-sandbox-verify-pins
 RUN chmod 0755 /usr/local/bin/dev-sandbox-doctor /usr/local/bin/dev-sandbox-verify-pins
 # Privileged scripts (root-owned, source-only repo copies).
+COPY claude-guard.mjs /usr/local/share/claude-guard/guard.mjs
+RUN mkdir -p /etc/claude-code && node /usr/local/share/claude-guard/guard.mjs --managed-settings > /etc/claude-code/managed-settings.json
 COPY init-firewall.sh /usr/local/sbin/egress-firewall
 COPY perms-fix.sh     /usr/local/sbin/dev-sandbox-perms-fix
 COPY entrypoint.sh    /usr/local/sbin/dev-sandbox-entrypoint

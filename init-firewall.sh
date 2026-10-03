@@ -17,6 +17,22 @@
 
 set -uo pipefail
 
+# sync.sh embeds this companion for images whose Dockerfiles already COPY only
+# the firewall. Direct canonical use reads the adjacent reviewed source instead.
+# Installation must succeed before the readiness sentinel can be written.
+if ! declare -F lockbox_install_clienthello_policy >/dev/null; then
+  lockbox_install_clienthello_policy() {
+    local source="${BASH_SOURCE[0]%/*}/clienthello-policy.py" tmp
+    [[ -f "$source" && -d /usr/local/bin && ! -L /usr/local/bin ]] || return 1
+    tmp="$(mktemp /usr/local/bin/.lockbox-clienthello.XXXXXX)" || return 1
+    if cat "$source" > "$tmp" && chown root:root "$tmp" && chmod 0755 "$tmp" && mv -fT "$tmp" /usr/local/bin/lockbox-clienthello-policy; then
+      return 0
+    fi
+    rm -f "$tmp"
+    return 1
+  }
+fi
+
 PROXY_USER="proxy"
 SENTINEL="/run/egress-firewall-ok"
 INBOUND_FILE="/etc/egress/inbound-ports"
@@ -139,7 +155,8 @@ if iptables  -S OUTPUT 2>/dev/null | grep -q '^-P OUTPUT DROP' \
    && iptables -C OUTPUT -o lo -m owner ! --uid-owner "$PROXY_USER" -p udp --dport 53 -j DROP 2>/dev/null \
    && iptables -C OUTPUT -o lo -m owner ! --uid-owner "$PROXY_USER" -p tcp --dport 53 -j DROP 2>/dev/null \
    && iptables -C OUTPUT -m owner --uid-owner "$PROXY_USER" -j ACCEPT 2>/dev/null \
-   && iptables -C OUTPUT -j EGRESS_DENY 2>/dev/null; then
+   && iptables -C OUTPUT -j EGRESS_DENY 2>/dev/null \
+   && lockbox_install_clienthello_policy; then
   if : > "$SENTINEL" 2>/dev/null; then
     echo "[firewall] Egress locked to proxy UID '$PROXY_USER' (IPv4 + IPv6 default-deny, verified)."
   else

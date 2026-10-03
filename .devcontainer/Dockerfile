@@ -66,7 +66,7 @@ RUN set -eux; \
 # The security-guidance plugin's hooks (SessionStart + PostToolUse/Stop) shell
 # out to python3 via sg-python.sh; with no python3 on PATH every session start
 # errors "no working Python 3 interpreter found." Same pinned-asset approach as
-# the Vision/sandbox images (NOT the GitHub API — its 60-req/hr unauthenticated
+# the sandbox images (NOT the GitHub API — its 60-req/hr unauthenticated
 # limit fails parallel builds). python3 + pip + venv + ssl, no compile.
 # The deep SDK/LLM reviewer pip-installs claude-agent-sdk on first start, which
 # needs PyPI egress; if the allowlist doesn't grant it that layer degrades
@@ -83,7 +83,8 @@ RUN set -eux; \
     echo "${want}  /tmp/py.tar.gz" | sha256sum -c -; \
     rm /tmp/py-SHA256SUMS; \
     mkdir -p /opt/python; \
-    tar -xzf /tmp/py.tar.gz --strip-components=1 -C /opt/python; \
+    tar -xzf /tmp/py.tar.gz --strip-components=1 --no-same-owner -C /opt/python; \
+    chmod -R go-w /opt/python; \
     rm /tmp/py.tar.gz; \
     [ -x /opt/python/bin/python ] || ln -s python3 /opt/python/bin/python; \
     /opt/python/bin/python3 --version; /opt/python/bin/python3 -m venv --help >/dev/null
@@ -173,9 +174,16 @@ ENV DISABLE_AUTOUPDATER=1
 # prefix, so they never need write access to the pinned root prefix above.
 RUN install -d -o dev -g dev -m 0755 /home/dev/.npm-global
 ENV NPM_CONFIG_PREFIX=/home/dev/.npm-global
+ENV CLAUDE_CONFIG_DIR=/home/dev/.claude
+ENV CODEX_HOME=/home/dev/.codex
+RUN mkdir -p /home/dev/.agents /home/dev/.codex/skills \
+    && ln -s /home/dev/.codex/skills /home/dev/.agents/skills \
+    && chown -R dev:dev /home/dev/.agents /home/dev/.codex
 
 # Bake privileged scripts into the image at /usr/local/sbin (root-owned, not
 # writable from inside the container). The .devcontainer copies are source-only.
+COPY claude-guard.mjs /usr/local/share/claude-guard/guard.mjs
+RUN mkdir -p /etc/claude-code && node /usr/local/share/claude-guard/guard.mjs --managed-settings > /etc/claude-code/managed-settings.json
 COPY init-firewall.sh /usr/local/sbin/egress-firewall
 COPY perms-fix.sh     /usr/local/sbin/lockbox-perms-fix
 COPY entrypoint.sh    /usr/local/sbin/lockbox-entrypoint

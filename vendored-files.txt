@@ -1,5 +1,5 @@
-# Files vendored VERBATIM by sync.sh into each managed .devcontainer/ — one per
-# line. Shared source of truth so a fourth canonical file is added in ONE place:
+# Canonical files vendored with provenance stamps into each managed .devcontainer/
+# — one per line. Shared source of truth so a new file is added in ONE place:
 # both sync.sh (its VENDORED array) and CI (.github/workflows/ci.yml vendored job)
 # read this manifest. Comments (# ...) and blank lines are ignored.
 #
@@ -9,3 +9,5 @@ init-firewall.sh
 squid.conf
 launcher-common.sh
 claude-stage-items.txt
+clienthello-policy.py
+claude-guard.mjs

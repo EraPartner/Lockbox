@@ -25,6 +25,35 @@ echo "== Workspace =="
 if ( : > "$WS/.doctor.$$" ) 2>/dev/null; then rm -f "$WS/.doctor.$$"; ok "workspace is writable (full dev)"; else bad "workspace is NOT writable"; fi
 git -C "$WS" rev-parse --short HEAD >/dev/null 2>&1 && ok "git read ops work (HEAD: $(git -C "$WS" rev-parse --short HEAD 2>/dev/null))" || note "not a git repo (or no commits) — fine for non-git targets"
 
+# Verify read-only mount flags, not merely permissions that can hide a bad mount.
+protected=()
+for rel in .git .devcontainer sandbox/.devcontainer; do
+  [[ -e "$WS/$rel" || -L "$WS/$rel" ]] && protected+=("$WS/$rel")
+done
+if [[ -d "$WS/.git" ]]; then
+  hooks="$(git -C "$WS" rev-parse --git-path hooks)" || exit 1
+  case "$hooks" in /*) ;; *) hooks="$WS/$hooks" ;; esac
+  case "$hooks" in "$WS"/*) protected+=("$hooks") ;; esac
+fi
+if /opt/python/bin/python3 - "${protected[@]}" <<'MOUNT_CHECK'
+import os, re, sys
+mounts = []
+def decode(value):
+    return re.sub(r"\\([0-7]{3})", lambda match: chr(int(match[1], 8)), value)
+for line in open('/proc/self/mountinfo'):
+    fields = line.split()
+    mounts.append((decode(fields[4]), set(fields[5].split(',')), int(fields[0])))
+for value in sys.argv[1:]:
+    path = os.path.normpath(value)
+    candidates = [m for m in mounts if path == m[0] or path.startswith(m[0].rstrip('/') + '/')]
+    selected = max(candidates, key=lambda m: (len(m[0]), m[2]))
+    if 'ro' not in selected[1]:
+        print('read-only mount missing: ' + path, file=sys.stderr)
+        sys.exit(1)
+MOUNT_CHECK
+then ok "Git, hooks and launcher trees have read-only mounts";
+else bad "anti-tamper mount verification failed; recreate the container"; fi
+
 echo "== Toolchain =="
 for b in node npm claude codex bwrap gh git python3; do
   command -v "$b" >/dev/null 2>&1 && ok "installed CLI/tool: $b ($("$b" --version 2>/dev/null | head -1))" || bad "$b missing"
@@ -33,14 +62,14 @@ done
 echo "== Launch integrity (pinned binaries) =="
 if [[ -x /usr/local/bin/dev-sandbox-verify-pins ]]; then
   # Absolute path — a bare-name call could resolve to a dev-writable shadow.
-  pin_err="$(/usr/local/bin/dev-sandbox-verify-pins --quiet 2>&1 >/dev/null)"
-  if [[ -z "$pin_err" ]]; then
+  if pin_err="$(/usr/local/bin/dev-sandbox-verify-pins --quiet 2>&1 >/dev/null)"; then
     ok "agent CLIs and shared tools match build-time fingerprints"
   else
+    bad "binary pin verification failed"
     while IFS= read -r line; do [[ -n "$line" ]] && bad "$line"; done <<<"$pin_err"
   fi
 else
-  note "dev-sandbox-verify-pins not baked — rebuild the image to enable pin checks"
+  bad "mandatory pin checker missing — rebuild the image"
 fi
 
 echo "== Egress lock (allowlist-enforced) =="
@@ -55,25 +84,33 @@ provider_code="$(curl -sS --max-time 12 -o /dev/null -w '%{http_code}' "https://
 if [[ "$provider_code" =~ ^[1-5][0-9][0-9]$ ]]; then
   ok "$provider_host reachable via proxy (HTTP $provider_code)"
 else
-  note "could not reach $provider_host (curl status: ${provider_code:-none})"
+  bad "could not reach $provider_host (curl status: ${provider_code:-none})"
 fi
+# Direct egress should be blocked independently of proxy availability.
+if curl -sS --max-time 6 --noproxy '*' -o /dev/null "https://$provider_host/" 2>/dev/null; then
+  bad "DIRECT egress succeeded — firewall not enforcing!"
+else ok "direct egress is blocked"; fi
 if curl -sS --max-time 8 -o /dev/null https://example.com/ 2>/dev/null; then
   bad "DENIED host example.com was reachable — allowlist not enforced!"
 else ok "denied host blocked (example.com)"; fi
 echo "  (effective allowlist: $(grep -cvE '^\s*#|^\s*$' /etc/squid/allowlist.txt 2>/dev/null || echo '?') hosts)"
 
-echo "== LLM credentials =="
+# Native login lives in the selected provider's private volume.
 if [[ "$AGENT" == codex ]]; then
-  if codex login status >/dev/null 2>&1; then ok "Codex login cache is valid"; else bad "Codex is not logged in"; fi
-elif [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}${ANTHROPIC_API_KEY:-}${ANTHROPIC_AUTH_TOKEN:-}" ]]; then
-  ok "Claude token in env"
+  if codex login status >/dev/null 2>&1; then ok "Codex private login is valid"; else bad "Codex is logged out"; fi
+elif claude auth status >/dev/null 2>&1; then
+  ok "Claude private login is valid"
+elif [[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}${ANTHROPIC_API_KEY:-}" ]]; then
+  ok "Claude explicit environment authentication is present"
 else
-  # The launcher forwards the token via the FINAL `claude` exec's env (bin/dev's
-  # EXEC_ENV), NOT `container run -e`, so a doctor run from a SEPARATE `container
-  # exec` won't see it even though the launched session does. So this is a note,
-  # not a hard fail — running doctor standalone shouldn't report a false negative.
-  note "no Claude token in THIS env — expected if you ran doctor via a separate 'container exec'."
-  note "  It is injected into the launched 'claude' session (or set dev-sandbox-claude-code-token in Keychain)."
+  bad "Claude is logged out; use the provider launcher interactively"
+fi
+
+# Editing sandboxes must not receive Git push credentials.
+if [[ -z "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ]]; then
+  ok "no Git push token in the environment"
+else
+  bad "GH_TOKEN/GITHUB_TOKEN present — use the separate git-agent for publication"
 fi
 
 echo "== Trust model =="

@@ -1,6 +1,8 @@
+# Match the launcher: use an installed runtime with the standard TOML parser.
+PYTHON ?= $(shell for runtime in python3 python3.14 python3.13 python3.12 python3.11; do if "$$runtime" -c 'import tomllib' >/dev/null 2>&1; then printf '%s' "$$runtime"; break; fi; done)
 # LockBox convenience targets. Run `make setup` ONCE per fresh clone to enable the
 # tracked pre-commit gate (git does not carry core.hooksPath across a clone).
-.PHONY: setup sync check audit test provider-check help pins pins-check pins-report
+.PHONY: setup sync check audit test native-launcher-test provider-check help pins pins-check pins-report
 
 help: ## Show this help
 	@grep -E '^[a-z][a-zA-Z0-9_-]*:.*## ' $(MAKEFILE_LIST) \
@@ -14,12 +16,20 @@ sync: ## Vendor canonical files + regenerate allowlists into every managed devco
 	./sync.sh
 
 check: ## Verify vendored copies, allowlists, required tools, and pins are in sync (no writes)
+	@test -n "$(PYTHON)" || { echo 'check: Python 3.11 or newer is required (tomllib).'; exit 1; }
 	./sync.sh --check
 	./bump-pins.sh --check
 	./test/provider-parity.sh
 	./test/verify-pins-cache.sh
 	./test/verify-pins-manifest.sh
-	python3 test/test-sync.py
+	$(PYTHON) test/test-sync.py
+	$(PYTHON) test/test-claude-readiness.py
+	$(PYTHON) test/test-launch-lock.py
+	$(PYTHON) test/test-doctor.py
+	$(PYTHON) test/test-agent-config.py
+	$(PYTHON) test/test-claude-guard.py
+	$(PYTHON) test/test-mount-policy.py
+	$(PYTHON) test/test-clienthello-policy.py
 
 provider-check: ## Verify Claude/Codex entry points retain the same shared architecture
 	./test/provider-parity.sh
@@ -38,3 +48,7 @@ audit: ## Scan the git index for hardcoded secrets / private keys
 
 test: ## Boot the sandbox image and assert the egress lock enforces (needs a container runtime)
 	./test/egress-smoke.sh
+
+native-launcher-test: ## Exercise real Apple Container launcher policy transitions (requires built generic test image)
+	@test -n "$(PYTHON)" || { echo 'check: Python 3.11 or newer is required (tomllib).'; exit 1; }
+	LOCKBOX_NATIVE_LAUNCHER_TEST=1 $(PYTHON) test/test-native-launcher.py

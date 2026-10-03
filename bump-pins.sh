@@ -51,7 +51,7 @@ for _d in "${EGRESS_DEVCONTAINERS[@]}"; do
   fi
 done
 ((${#DOCKERFILES[@]} > 0)) || {
-  echo "bump-pins: no managed Dockerfiles found (check paths.sh)" >&2
+  echo "bump-pins: no managed Dockerfiles found (check paths.local.tsv / EGRESS_FLEET_FILE)" >&2
   exit 1
 }
 

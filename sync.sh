@@ -129,7 +129,7 @@ write_atomic() {
   mv "$tmp" "$out"
 }
 
-# Write a vendored copy of a canonical file: its EXACT content, then a provenance
+# Write a vendored copy of a canonical file and a provenance
 # stamp (LockBox version + the canonical file's SHA-256). The stamp lets a baked
 # container self-identify its egress-lock generation, and is DETERMINISTIC (version +
 # content hash — no timestamp, no commit SHA) so `--check` can regenerate and verify
@@ -138,14 +138,40 @@ write_atomic() {
 # Written atomically via write_atomic. $3 = octal mode (default 0644).
 gen_vendored() {
   local canonical="$1" out="$2" mode="${3:-0644}"
-  local hash
+  local hash comment='#'
+  [[ "$canonical" != *.mjs ]] || comment='//'
   hash="$(sha256_of "$canonical")"
   {
-    cat "$canonical"
+    if [[ "${canonical##*/}" == init-firewall.sh ]]; then
+      # Keep existing fleet Dockerfiles compatible: their baked firewall carries
+      # the root-owned proxy companion. Its source remains independently tested.
+      head -n 1 "$canonical"
+      echo '# Generated ClientHello installer; source: LockBox/clienthello-policy.py'
+      echo "# companion sha256:$(sha256_of "$HERE/clienthello-policy.py")"
+      cat <<'INSTALLER'
+lockbox_install_clienthello_policy() {
+  local tmp
+  [[ -d /usr/local/bin && ! -L /usr/local/bin ]] || return 1
+  tmp="$(mktemp /usr/local/bin/.lockbox-clienthello.XXXXXX)" || return 1
+  if ! cat > "$tmp" <<'LOCKBOX_CLIENTHELLO_SOURCE'
+INSTALLER
+      cat "$HERE/clienthello-policy.py"
+      cat <<'INSTALLER'
+LOCKBOX_CLIENTHELLO_SOURCE
+  then rm -f "$tmp"; return 1; fi
+  if chown root:root "$tmp" && chmod 0755 "$tmp" && mv -fT "$tmp" /usr/local/bin/lockbox-clienthello-policy; then return 0; fi
+  rm -f "$tmp"
+  return 1
+}
+INSTALLER
+      tail -n +2 "$canonical"
+    else
+      cat "$canonical"
+    fi
     echo
-    echo "# ─── vendored by LockBox v${LOCKBOX_VERSION} · canonical sha256:${hash} ───"
-    echo "# Generated from the canonical source by LockBox/sync.sh — DO NOT EDIT HERE."
-    echo "# Edit LockBox/$(basename "$canonical") and re-run ./sync.sh."
+    echo "$comment ─── vendored by LockBox v${LOCKBOX_VERSION} · canonical sha256:${hash} ───"
+    echo "$comment Generated from the canonical source by LockBox/sync.sh — DO NOT EDIT HERE."
+    echo "$comment Edit LockBox/$(basename "$canonical") and re-run ./sync.sh."
   } | write_atomic "$out" "$mode"
 }
 
@@ -237,6 +263,6 @@ echo "Done: $synced synced, $skipped skipped. Rebuild affected containers so the
 # A missing target means a managed container silently stopped receiving the
 # egress lock — fail loudly unless explicitly allowed.
 if (( skipped > 0 )) && (( ! ALLOW_MISSING )); then
-  echo "sync: ERROR — $skipped target(s) missing (see SKIP above). Fix paths.sh or pass --allow-missing." >&2
+  echo "sync: ERROR — $skipped target(s) missing (see SKIP above). Fix paths.local.tsv / EGRESS_FLEET_FILE or pass --allow-missing." >&2
   exit 1
 fi

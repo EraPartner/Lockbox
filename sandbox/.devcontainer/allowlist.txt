@@ -11,8 +11,7 @@
 # This is the shared floor. Per-project additions live in each project's
 # .devcontainer/allowlist.extra.txt; `sync.sh` concatenates base + extra into
 # the baked .devcontainer/allowlist.txt. Keep this MINIMAL — anything added here
-# widens egress for all six containers (Brain, Vision, Watchman, Napoleon-relay,
-# git-agent, sandbox). The generic sandbox keeps its dev floor (npm/PyPI) in its OWN
+# widens egress for every managed container. The generic sandbox keeps its dev floor (npm/PyPI) in its OWN
 # allowlist.extra.txt, NOT here, so the others stay tight.
 
 # Anthropic / Claude Code — the LLM API + auth/token refresh.
@@ -39,7 +38,7 @@ codeload.github.com
 #
 # This is the GENERAL DEV FLOOR for the universal sandbox: the package registries
 # a typical Node/Python project needs to install dependencies. It widens egress
-# for THIS container only (not the tight Vision/Watchman/git-agent baselines).
+# for THIS container only (not other managed project baselines).
 # A specific target can add more at launch via its own .sandbox-allowlist.txt.
 
 # Anthropic / Claude Code (auth, auto-updater, docs beyond the base API).
@@ -57,6 +56,9 @@ chatgpt.com
 
 # npm
 registry.npmjs.org
+
+# Safe Chain malware and package-age feeds for screened npm/pip installs.
+malware-list.aikido.dev
 
 # PyPI
 pypi.org

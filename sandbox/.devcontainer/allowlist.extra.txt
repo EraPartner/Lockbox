@@ -3,7 +3,7 @@
 #
 # This is the GENERAL DEV FLOOR for the universal sandbox: the package registries
 # a typical Node/Python project needs to install dependencies. It widens egress
-# for THIS container only (not the tight Vision/Watchman/git-agent baselines).
+# for THIS container only (not other managed project baselines).
 # A specific target can add more at launch via its own .sandbox-allowlist.txt.
 
 # Anthropic / Claude Code (auth, auto-updater, docs beyond the base API).
@@ -21,6 +21,9 @@ chatgpt.com
 
 # npm
 registry.npmjs.org
+
+# Safe Chain malware and package-age feeds for screened npm/pip installs.
+malware-list.aikido.dev
 
 # PyPI
 pypi.org

@@ -1,2 +1,9 @@
 # macOS
 .DS_Store
+
+# Machine-specific deployment layout
+/paths.local.tsv
+
+# Python runtime caches
+__pycache__/
+*.py[cod]
