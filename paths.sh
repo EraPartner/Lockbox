@@ -1,59 +1,55 @@
 #!/usr/bin/env bash
-# Canonical locations of the egress-managed devcontainers. Sourced by sync.sh and
-# audit.sh so the target list lives in ONE place.
-#
-# WHY THIS EXISTS: sync.sh and audit.sh used to hardcode their own (different)
-# path lists. When the repos moved from
-# /Users/computer/Documents/Personal/Scripts/Projects -> /Users/computer/Code,
-# only audit.sh's derivation followed; sync.sh kept the old paths and silently
-# SKIPped 3 of 4 containers, so the "single source of truth" egress lock stopped
-# propagating to Vision/Watchman/git-agent. One shared list prevents that drift.
-#
-# Override CODE_ROOT / BRAIN_DC in the environment if your layout differs.
+# Shared target discovery for sync.sh and bump-pins.sh.
+# Personal deployment paths belong in the ignored paths.local.tsv data file.
 
-CODE_ROOT="${CODE_ROOT:-/Users/computer/Code}"
-BRAIN_DC="${BRAIN_DC:-/Users/computer/Library/Mobile Documents/iCloud~md~obsidian/Documents/Brain/.devcontainer}"
-
-# The generic dev-sandbox was MERGED INTO this repo (it had no git repo of its
-# own; this puts its security-critical launcher/Dockerfile/entrypoint under git +
-# the .githooks gate). It now lives at <repo>/sandbox/.devcontainer and is a sync
-# target like any other. Resolve the repo root from THIS file's own location so
-# the path stays correct regardless of where the repo is checked out.
 EGRESS_REPO="${EGRESS_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)}"
+EGRESS_DEVCONTAINERS=("$EGRESS_REPO/.devcontainer" "$EGRESS_REPO/sandbox/.devcontainer")
+EGRESS_PROJECT_LABELS=(LockBox sandbox)
 
-# Every .devcontainer the canonical egress files are vendored into.
-# shellcheck disable=SC2034  # consumed by scripts that source this file (sync.sh/audit.sh)
-EGRESS_DEVCONTAINERS=(
-  "$CODE_ROOT/Vision/.devcontainer"
-  "$CODE_ROOT/Watchman/.devcontainer"
-  "$CODE_ROOT/Napoleon-relay/.devcontainer"
-  "$CODE_ROOT/git-agent/.devcontainer"
-  "$CODE_ROOT/dotfiles/.devcontainer"
-  "$CODE_ROOT/VaultLens/.devcontainer"
-  "$EGRESS_REPO/.devcontainer"
-  "$EGRESS_REPO/sandbox/.devcontainer"
-  "$BRAIN_DC"
-)
-
-# CI / self-check: with EGRESS_SELF_ONLY=1, restrict the target list to the in-repo
-# two devcontainers only. The sibling fleet repos aren't checked out in CI, so
-# `EGRESS_SELF_ONLY=1 ./sync.sh --check` lets CI verify THIS repo's own vendored
-# copies AND its regenerated allowlist (via the same gen_allowlist, no divergence)
-# without needing the whole fleet side-by-side.
-if [[ "${EGRESS_SELF_ONLY:-0}" == 1 ]]; then
-  # shellcheck disable=SC2034  # consumed by scripts that source this file
-  EGRESS_DEVCONTAINERS=("$EGRESS_REPO/.devcontainer" "$EGRESS_REPO/sandbox/.devcontainer")
-fi
-
-# The Brain path is a second checkout of the VaultLens repository. Generated
-# allowlist comments are tracked content, so both checkouts must use the same
-# stable repository label instead of deriving different labels from their local
-# parent directory names.
-egress_project_label() {
-  local dst="$1"
-  if [[ "$dst" == "$BRAIN_DC" ]]; then
-    printf '%s\n' VaultLens
-  else
-    basename "$(dirname "$dst")"
+# CI checks only repository-owned targets and never reads host deployment data.
+if [[ "${EGRESS_SELF_ONLY:-0}" != 1 ]]; then
+  _fleet_file="${EGRESS_FLEET_FILE:-$EGRESS_REPO/paths.local.tsv}"
+  if [[ -n "${EGRESS_FLEET_FILE:-}" && ! -f "$_fleet_file" ]]; then
+    echo "paths: configured fleet file is missing: $_fleet_file" >&2
+    return 1
   fi
+  if [[ -f "$_fleet_file" ]]; then
+    while IFS= read -r _fleet_line || [[ -n "$_fleet_line" ]]; do
+      [[ -n "$_fleet_line" && "$_fleet_line" != \#* ]] || continue
+      _fleet_path="${_fleet_line%%$'\t'*}"
+      _fleet_label=""
+      if [[ "$_fleet_line" == *$'\t'* ]]; then
+        _fleet_label="${_fleet_line#*$'\t'}"
+      fi
+      if [[ "$_fleet_path" != /* || "$_fleet_path" != */.devcontainer ||
+            "$_fleet_label" == *$'\t'* || "$_fleet_label" == */* ]]; then
+        echo "paths: invalid fleet entry; expected absolute .devcontainer path and optional label" >&2
+        return 1
+      fi
+      for _fleet_existing in "${EGRESS_DEVCONTAINERS[@]}"; do
+        if [[ "$_fleet_existing" == "$_fleet_path" ]]; then
+          echo "paths: duplicate fleet target: $_fleet_path" >&2
+          return 1
+        fi
+      done
+      [[ -n "$_fleet_label" ]] || _fleet_label="$(basename "$(dirname "$_fleet_path")")"
+      EGRESS_DEVCONTAINERS+=("$_fleet_path")
+      EGRESS_PROJECT_LABELS+=("$_fleet_label")
+    done < "$_fleet_file"
+  fi
+fi
+EGRESS_LABEL_TARGETS=("${EGRESS_DEVCONTAINERS[@]}")
+unset _fleet_file _fleet_line _fleet_path _fleet_label _fleet_existing
+
+# Explicit labels keep generated content stable across differently named checkouts.
+egress_project_label() {
+  local dst="$1" i
+  for i in "${!EGRESS_LABEL_TARGETS[@]}"; do
+    if [[ "$dst" == "${EGRESS_LABEL_TARGETS[$i]}" ]]; then
+      printf '%s\n' "${EGRESS_PROJECT_LABELS[$i]}"
+      return
+    fi
+  done
+  echo "paths: target has no registered label: $dst" >&2
+  return 1
 }

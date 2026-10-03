@@ -1,0 +1,5 @@
+# Copy to paths.local.tsv and replace the example with your own absolute path.
+# One extra .devcontainer directory per line; paths may contain spaces.
+# An optional stable project label follows a literal tab.
+# LockBox's two in-repository sandboxes are always included; do not list them here.
+/path/to/my-project/.devcontainer
