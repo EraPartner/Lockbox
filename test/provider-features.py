@@ -100,6 +100,8 @@ def claude_features(home, workspace, env):
         "Claude connects the imported local MCP server",
     )
     requests = []
+    marker = workspace / "guard-must-not-execute.txt"
+    edited = workspace / "post-edit-fixture.txt"
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -121,6 +123,26 @@ def claude_features(home, workspace, env):
                     "stop_sequence": None,
                     "usage": {"input_tokens": 20, "output_tokens": 2},
                 }
+                # Claude may send a speculative request before the actual turn.
+                # Repeat tools until their results arrive, rather than counting requests.
+                completed_tools = any(
+                    isinstance(message.get("content"), list)
+                    and any(block.get("type") == "tool_result" for block in message["content"])
+                    for message in body.get("messages", [])
+                )
+                if not completed_tools and any(t.get("name") == "Bash" for t in body.get("tools", [])):
+                    payload["stop_reason"] = "tool_use"
+                    payload["content"] = [
+                        {
+                            "type": "tool_use", "id": "tool_guard_fixture", "name": "Bash",
+                            # Safe even if the guard regresses: help plus a temporary marker.
+                            "input": {"command": f"dd --help; printf unexpected > '{marker}'"},
+                        },
+                        {
+                            "type": "tool_use", "id": "tool_edit_fixture", "name": "Write",
+                            "input": {"file_path": str(edited), "content": "chmod 777 /tmp/fixture\n"},
+                        },
+                    ]
             data = json.dumps(payload).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -147,7 +169,9 @@ def claude_features(home, workspace, env):
                 "stream-json",
                 "--verbose",
                 "--max-turns",
-                "1",
+                "3",
+                "--allowedTools",
+                "Bash,Write",
             ],
             workspace,
             env,
@@ -157,6 +181,7 @@ def claude_features(home, workspace, env):
             for line in result.stdout.splitlines()
             if line.startswith("{")
         ]
+        require(result.returncode == 0, "Claude finishes the synthetic local tool session")
         initial = next(
             (
                 record
@@ -169,6 +194,8 @@ def claude_features(home, workspace, env):
             "lockbox-shared-fixture" in initial.get("slash_commands", []),
             "Claude discovers the imported shared skill",
         )
+        require("lockbox-readonly-fixture" in initial.get("agents", []),
+                "Claude discovers the imported role with an inherited model and read-only tools")
         require(
             any(
                 "lockbox-plugin-fixture:" in name and "plugin-skill" in name
@@ -177,11 +204,21 @@ def claude_features(home, workspace, env):
             "Claude activates an imported local plugin through its native plugin-dir option",
         )
         wire = json.dumps(requests)
+        if marker.exists() or "Blocked by local safety guard" not in wire:
+            print("Synthetic Claude hook diagnostics: " + result.stdout[-6000:], flush=True)
+            print("Synthetic local API diagnostics: " + wire[-6000:], flush=True)
+        require(not marker.exists() and "Blocked by local safety guard" in wire,
+                "Claude applies the managed PreToolUse denial before executing Bash")
+        require(edited.is_file() and "[security-guidance hook]" in wire,
+                "Claude runs the baked PostToolUse monitor after an actual Write")
         require(
             "LOCKBOX_GLOBAL_INSTRUCTION_FIXTURE" in wire
             and "LOCKBOX_PROJECT_INSTRUCTION_FIXTURE" in wire,
             "Claude loads shared global guidance and project AGENTS.md",
         )
+        require(any(json.dumps(request).count("LOCKBOX_PROJECT_INSTRUCTION_FIXTURE") == 1
+                    and "LOCKBOX_NESTED_INSTRUCTION_FIXTURE" in json.dumps(request) for request in requests),
+                "Claude loads nested guidance and deduplicates the CLAUDE.md AGENTS import")
     finally:
         server.shutdown()
         server.server_close()
@@ -198,6 +235,8 @@ def codex_features(home, workspace, env):
     )
     requests = []
     received = threading.Event()
+    marker = workspace / "guard-must-not-execute.txt"
+    edited = workspace / "post-edit-fixture.txt"
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -208,11 +247,20 @@ def codex_features(home, workspace, env):
                 json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             )
             received.set()
-            # Only prompt assembly is needed. End the local simulated request;
-            # no model execution, external account or tool call is involved.
-            data = b'{"error":{"message":"local instruction fixture complete","type":"invalid_request_error"}}'
-            self.send_response(400)
-            self.send_header("Content-Type", "application/json")
+            body = requests[-1]
+            completed_tools = any(item.get("type") in ("function_call_output", "custom_tool_call_output") for item in body.get("input", []))
+            output = [{"type": "message", "id": "msg_fixture", "role": "assistant", "status": "completed", "content": [{"type": "output_text", "text": "fixture response", "annotations": []}]}] if completed_tools else [
+                {"type": "function_call", "id": "fc_guard", "call_id": "call_guard", "name": "exec_command", "arguments": json.dumps({"cmd": f"dd --help; printf unexpected > '{marker}'"})},
+                {"type": "custom_tool_call", "id": "ct_edit", "call_id": "call_edit", "name": "apply_patch", "input": "*** Begin Patch\n*** Add File: " + str(edited) + "\n+chmod 777 /tmp/fixture\n*** End Patch"},
+            ]
+            response = {"id": "resp_fixture", "object": "response", "model": body.get("model"), "status": "completed", "output": output, "usage": {"input_tokens": 20, "output_tokens": 2, "total_tokens": 22}}
+            events = [("response.created", {"response": {**response, "status": "in_progress", "output": []}})]
+            for index, item in enumerate(output):
+                events.extend([("response.output_item.added", {"output_index": index, "item": item}), ("response.output_item.done", {"output_index": index, "item": item})])
+            events.append(("response.completed", {"response": response}))
+            data = "".join("event: " + event + "\ndata: " + json.dumps({"type": event, **value}) + "\n\n" for event, value in events).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
             self.wfile.write(data)
@@ -275,6 +323,15 @@ def codex_features(home, workspace, env):
         )
         process.stdin.write('{"method":"initialized","params":{}}\n')
         process.stdin.flush()
+        hooks = rpc("hooks/list", {"cwds": [str(workspace)]})
+        configured = [hook for entry in hooks["data"] for hook in entry["hooks"]]
+        require(
+            not any(entry["errors"] for entry in hooks["data"])
+            and all(any(hook["eventName"] == event and hook["enabled"] and hook["isManaged"]
+                        and hook["trustStatus"] == "managed" for hook in configured)
+                    for event in ("preToolUse", "postToolUse")),
+            "Codex loads the enforced shared pre-tool and post-edit hooks as managed policy",
+        )
         skills = rpc("skills/list", {"cwds": [str(workspace)], "forceReload": True})
         require(
             any(
@@ -284,7 +341,7 @@ def codex_features(home, workspace, env):
             ),
             "Codex discovers and enables the imported shared skill",
         )
-        thread = rpc("thread/start", {"cwd": str(workspace), "ephemeral": True})
+        thread = rpc("thread/start", {"cwd": str(workspace), "ephemeral": True, "sandbox": "danger-full-access", "approvalPolicy": "never"})
         status = rpc("mcpServerStatus/list", {"limit": 100})
         require(
             any(
@@ -305,12 +362,27 @@ def codex_features(home, workspace, env):
             received.wait(timeout=20),
             "Codex sends the synthetic request only to the local endpoint",
         )
+        deadline = time.monotonic() + 25
+        while time.monotonic() < deadline:
+            notice = lines.get(timeout=max(0.1, deadline - time.monotonic()))
+            if notice.get("method") == "turn/completed":
+                break
+        else:
+            raise AssertionError("Codex local fixture turn did not complete")
         wire = json.dumps(requests)
+        if marker.exists() or "Blocked by local safety guard" not in wire or not edited.exists():
+            print("Synthetic Codex tool diagnostics: " + wire[-5000:], flush=True)
+        require(not marker.exists() and "Blocked by local safety guard" in wire,
+                "Codex applies the managed PreToolUse denial before executing Bash")
+        require(edited.is_file() and "[security-guidance hook]" in wire,
+                "Codex runs the baked PostToolUse monitor after an actual patch")
         require(
             "LOCKBOX_GLOBAL_INSTRUCTION_FIXTURE" in wire
             and "LOCKBOX_PROJECT_INSTRUCTION_FIXTURE" in wire,
             "Codex loads shared global guidance and project AGENTS.md",
         )
+        require("LOCKBOX_NESTED_INSTRUCTION_FIXTURE" in wire,
+                "Codex loads nested project guidance")
     finally:
         process.terminate()
         try:
@@ -338,6 +410,17 @@ def main():
         for directory in (home, source, workspace, config):
             directory.mkdir(parents=True)
         (workspace / "AGENTS.md").write_text("LOCKBOX_PROJECT_INSTRUCTION_FIXTURE\n")
+        (workspace / "CLAUDE.md").write_text("@AGENTS.md\n")
+        # Codex walks ancestor guidance within a repository boundary. This is
+        # synthetic metadata only; no Git command or index write is performed.
+        metadata = workspace / ".git"
+        (metadata / "objects").mkdir(parents=True)
+        (metadata / "refs/heads").mkdir(parents=True)
+        (metadata / "HEAD").write_text("ref: refs/heads/fixture\n")
+        (metadata / "config").write_text("[core]\nrepositoryformatversion = 0\nbare = false\n")
+        nested = workspace / "nested"
+        nested.mkdir()
+        (nested / "AGENTS.md").write_text("LOCKBOX_NESTED_INSTRUCTION_FIXTURE\n")
         (source / "AGENTS.md").write_text("LOCKBOX_GLOBAL_INSTRUCTION_FIXTURE\n")
         skill = source / "skills/lockbox-shared-fixture"
         skill.mkdir(parents=True)
@@ -345,6 +428,9 @@ def main():
             "---\nname: lockbox-shared-fixture\ndescription: Read-only local LockBox discovery fixture.\n---\nReturn fixture information.\n"
         )
         if provider == "claude":
+            role = source / "claude/agents/lockbox-readonly-fixture.md"
+            role.parent.mkdir(parents=True)
+            role.write_text("---\nname: lockbox-readonly-fixture\ndescription: Read-only native discovery fixture.\nmodel: inherit\ntools: Read, Grep, Glob\n---\nInspect the requested fixture only. Do not delegate.\n")
             plugin = source / "claude/plugins/local-fixture"
             (plugin / ".claude-plugin").mkdir(parents=True)
             (plugin / ".claude-plugin/plugin.json").write_text(
@@ -379,15 +465,16 @@ def main():
             )
         env = environment(home, provider)
         if provider == "claude":
-            claude_features(home, workspace, env)
+            claude_features(home, nested, env)
         else:
-            codex_features(home, workspace, env)
+            codex_features(home, nested, env)
     # Root ownership and modes, rather than writable host guard mounts.
     guard = Path("/usr/local/share/claude-guard/guard.mjs")
     settings = Path("/etc/claude-code/managed-settings.json")
-    expected = json.loads(
-        subprocess.check_output(["node", str(guard), "--managed-settings"])
-    )
+    generator = guard.parent / "settings-generator.mjs"
+    if not generator.is_file():
+        generator = guard
+    expected = json.loads(subprocess.check_output(["node", str(generator), "--managed-settings"]))
     require(
         expected == json.loads(settings.read_text()),
         "baked Claude managed policy matches the canonical guard",

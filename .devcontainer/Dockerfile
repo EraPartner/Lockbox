@@ -1,18 +1,5 @@
 # LockBox sandbox image — devcontainer-FREE (built by `container build`).
-#
-# Self-contained image (no separate root Dockerfile). The former devcontainer-CLI
-# build relied on devcontainer FEATURES (node:1, anthropics/claude-code:1.0)
-# layered on by the CLI; apple/container has no feature system, so this file
-# installs Node + the Claude CLI itself. Hardening, the egress proxy, and the
-# baked privileged scripts are unchanged from that build.
-#
-# Hardened for Claude CLI in --dangerously-skip-permissions mode:
-#   - no privilege escalation: setuid/setgid bits stripped, no sudo (apple/container has no --security-opt)
-#   - a root ENTRYPOINT does all privileged setup, then drops to a keep-alive
-#   - all egress is forced through an in-container squid proxy enforcing a
-#     HOSTNAME allowlist (peek+splice SNI, no TLS interception)
-
-# Pin the base image by digest for reproducibility + supply-chain integrity.
+# Root entrypoint configures the firewall and proxy, then drops privileges.
 FROM debian:bookworm-slim@sha256:0104b334637a5f19aa9c983a91b54c89887c0984081f2068983107a6f6c21eeb
 
 ARG TZ=UTC
@@ -182,8 +169,15 @@ RUN mkdir -p /home/dev/.agents /home/dev/.codex/skills \
 
 # Bake privileged scripts into the image at /usr/local/sbin (root-owned, not
 # writable from inside the container). The .devcontainer copies are source-only.
+# Claude policy bundle; exact formatting opt-ins come from reviewed profiles.
+ARG CLAUDE_POLICY_PROJECT=LockBox
+ARG CLAUDE_POLICY_ROOT=/workspaces/LockBox
 COPY claude-guard.mjs /usr/local/share/claude-guard/guard.mjs
-RUN mkdir -p /etc/claude-code && node /usr/local/share/claude-guard/guard.mjs --managed-settings > /etc/claude-code/managed-settings.json
+COPY claude-post-edit.mjs /usr/local/share/claude-guard/hooks/post-edit.mjs
+COPY claude-explicit-format.sh /usr/local/share/claude-guard/managed/explicit-format
+COPY claude-policy-verify.sh /usr/local/share/claude-guard/verify-policy.sh
+COPY claude-policy-install.sh /usr/local/share/claude-guard/install-policy.sh
+RUN bash /usr/local/share/claude-guard/install-policy.sh "$CLAUDE_POLICY_PROJECT" "$CLAUDE_POLICY_ROOT"
 COPY init-firewall.sh /usr/local/sbin/egress-firewall
 COPY perms-fix.sh     /usr/local/sbin/lockbox-perms-fix
 COPY entrypoint.sh    /usr/local/sbin/lockbox-entrypoint

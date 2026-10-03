@@ -1,18 +1,5 @@
 # Generic universal full-dev sandbox image — devcontainer-FREE (built by `container build`).
-#
-# One image, ANY project: bin/dev mounts the project read-write and runs Claude
-# Code or Codex behind the same egress lock and launch-integrity gate.
-#
-# Hardened like the others:
-#   - no privilege escalation: setuid/setgid bits stripped, no sudo (apple/container has no --security-opt)
-#   - a root ENTRYPOINT does all privileged setup (perms, firewall, proxy), then
-#     drops to a keep-alive; dev sessions run as the unprivileged `dev` user
-#   - all egress forced through an in-container squid proxy (hostname allowlist)
-#
-# NOTE (security posture vs git-agent): the workspace is READ-WRITE here and NO
-# git push token / ssh signing socket is forwarded. Commit & push via the
-# dedicated `git-agent` sandbox; this box is for editing and running code.
-
+# Root entrypoint configures the firewall and proxy, then drops privileges.
 FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
 
 ARG TZ=UTC
@@ -211,8 +198,15 @@ COPY bin/doctor      /usr/local/bin/dev-sandbox-doctor
 COPY bin/verify-pins /usr/local/bin/dev-sandbox-verify-pins
 RUN chmod 0755 /usr/local/bin/dev-sandbox-doctor /usr/local/bin/dev-sandbox-verify-pins
 # Privileged scripts (root-owned, source-only repo copies).
+# Claude policy bundle; exact formatting opt-ins come from reviewed profiles.
+ARG CLAUDE_POLICY_PROJECT=generic
+ARG CLAUDE_POLICY_ROOT=/workspaces/project
 COPY claude-guard.mjs /usr/local/share/claude-guard/guard.mjs
-RUN mkdir -p /etc/claude-code && node /usr/local/share/claude-guard/guard.mjs --managed-settings > /etc/claude-code/managed-settings.json
+COPY claude-post-edit.mjs /usr/local/share/claude-guard/hooks/post-edit.mjs
+COPY claude-explicit-format.sh /usr/local/share/claude-guard/managed/explicit-format
+COPY claude-policy-verify.sh /usr/local/share/claude-guard/verify-policy.sh
+COPY claude-policy-install.sh /usr/local/share/claude-guard/install-policy.sh
+RUN bash /usr/local/share/claude-guard/install-policy.sh "$CLAUDE_POLICY_PROJECT" "$CLAUDE_POLICY_ROOT"
 COPY init-firewall.sh /usr/local/sbin/egress-firewall
 COPY perms-fix.sh     /usr/local/sbin/dev-sandbox-perms-fix
 COPY entrypoint.sh    /usr/local/sbin/dev-sandbox-entrypoint
