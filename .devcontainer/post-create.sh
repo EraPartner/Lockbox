@@ -64,29 +64,8 @@ if [[ ! -f /home/dev/.gitconfig || ! -s /home/dev/.gitconfig ]]; then
 EOF
 fi
 
-# Seed the container's ~/.claude + ~/.claude.json from the SANITIZED staging
-# dir the host wrapper produced at /home/dev/.claude-stage (bind RO):
-#   /home/dev/.claude-stage/dot-claude/   sanitized copy of host ~/.claude
-#   /home/dev/.claude-stage/claude.json   sanitized copy of host ~/.claude.json
-# The host staging (launcher-common.sh) copies only a curated item allowlist (so
-# .credentials.json never enters), strips .hooks from settings.json and
-# .oauthAccount/.projects/.installMethod from .claude.json. NOTE: mcpServers and
-# enabledPlugins ARE propagated by design (user-enabled servers/plugins — see the
-# post-start KEEP note); the PreToolUse guard reaches the box out-of-band via the
-# root-owned managed-settings.json bind, not through this staged config.
-STAGE=/home/dev/.claude-stage
-if [[ "$AGENT" == claude && ! -f /home/dev/.claude/settings.json && -d "$STAGE/dot-claude" ]]; then
-  echo "[post-create] Seeding ~/.claude from sanitized stage..."
-  if ! rsync -a --ignore-errors "$STAGE/dot-claude/" /home/dev/.claude/; then
-    echo "[post-create] WARN: ~/.claude rsync seed had errors (some files may be missing)." >&2
-  fi
-  echo "[post-create] Seeded $(find /home/dev/.claude -mindepth 1 -maxdepth 1 | wc -l) entries into ~/.claude."
-fi
-if [[ "$AGENT" == claude && ! -f /home/dev/.claude.json && -f "$STAGE/claude.json" ]]; then
-  cp "$STAGE/claude.json" /home/dev/.claude.json
-  chmod 0600 /home/dev/.claude.json
-fi
-
+# Provider configuration is initialized by the host launcher after lifecycle
+# readiness. Claude uses its private volume; there is no per-create host merge.
 
 echo "[post-create] Done."
 echo "[post-create] Lint:  shellcheck *.sh    ·    self-check:  ./sync.sh --check ; ./audit.sh"

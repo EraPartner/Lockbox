@@ -51,12 +51,19 @@ rc=0
 seen=' '
 count=0
 expected=' node npm claude codex bwrap gh git python3 safe-chain '
-while IFS=$'\t' read -r name path want extra; do
-  [[ -z "${name:-}" || "${name#\#}" != "$name" ]] && continue
-  if [[ -n "${extra:-}" || ! "$name" =~ ^[a-zA-Z0-9._-]+$ || "$path" != /* || ! "$want" =~ ^[0-9a-f]{64}$ ]]; then
-    echo "verify-pins: malformed pin manifest row for '${name:-unnamed}'" >&2
+# Parse the whole row: tab IFS collapses empty fields and would accept a trailing
+# empty fourth field. Require exactly three nonempty fields, even on the last
+# line of a file without a newline.
+row_pattern=$'^([a-zA-Z0-9._-]+)\t(/[^\t]+)\t([0-9a-f]{64})$'
+while IFS= read -r row || [[ -n "$row" ]]; do
+  [[ -z "$row" || "$row" == \#* ]] && continue
+  if [[ ! "$row" =~ $row_pattern ]]; then
+    echo "verify-pins: malformed pin manifest row" >&2
     rc=1; continue
   fi
+  name="${BASH_REMATCH[1]}"
+  path="${BASH_REMATCH[2]}"
+  want="${BASH_REMATCH[3]}"
   if [[ "$expected" != *" $name "* ]]; then
     echo "verify-pins: unexpected pinned tool: $name" >&2
     rc=1; continue

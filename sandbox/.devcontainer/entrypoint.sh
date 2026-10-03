@@ -71,7 +71,9 @@ for _ in $(seq 1 20); do
 done
 
 # Graceful shutdown on `container stop` (SIGTERM): close squid cleanly.
-shutdown() { log "shutting down..."; squid -k shutdown 2>/dev/null || true; exit 0; }
+# pid_filename is disabled, and root lacks CAP_KILL after the capability drop.
+# Send control signals as the proxy owner without granting another capability.
+shutdown() { log "shutting down..."; runuser -u proxy -- pkill -TERM -x squid 2>/dev/null || true; exit 0; }
 trap shutdown TERM INT
 
 log "Setup complete. Container ready (dev sessions via 'container exec')."
@@ -91,7 +93,7 @@ while true; do
       log "⚠ squid restarted $squid_restarts times — likely a config error; see /var/log/squid/boot.log"
   fi
   if [[ -f "$ACCESS_LOG" ]] && (( $(stat -c %s "$ACCESS_LOG" 2>/dev/null || echo 0) > LOG_CAP )); then
-    squid -k rotate 2>/dev/null || true
+    runuser -u proxy -- pkill -USR1 -x squid 2>/dev/null || true
   fi
   chmod o+r /var/log/squid/access.log* 2>/dev/null || true
   # Background + wait so the TERM trap fires immediately on `container stop`; a bare

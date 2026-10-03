@@ -28,8 +28,8 @@ done
 
 # Both launchers must use the canonical Codex authentication helper rather than
 # growing separate credential-handling implementations again.
-require_literal .devcontainer/bin/agent 'sandbox_ensure_codex_login'
-require_literal sandbox/.devcontainer/bin/dev 'sandbox_ensure_codex_login'
+require_literal .devcontainer/bin/agent 'lockbox_ensure_agent_login'
+require_literal sandbox/.devcontainer/bin/dev 'lockbox_ensure_agent_login'
 require_literal sandbox/.devcontainer/bin/dev 'sandbox_verify_pins_cached "$NAME" dev'
 require_literal sandbox/.devcontainer/bin/dev '/usr/local/bin/dev-sandbox-verify-pins'
 require_literal sandbox/.devcontainer/bin/dev '/usr/local/share/dev-sandbox/binary-pins.txt'
@@ -47,10 +47,19 @@ for dockerfile in .devcontainer/Dockerfile sandbox/.devcontainer/Dockerfile; do
   require_literal "$dockerfile" 'npm install -g --no-fund --no-audit "@openai/codex@${CODEX_VERSION}"'
   require_literal "$dockerfile" 'node npm claude codex bwrap gh git python3 safe-chain'
 done
-require_literal .devcontainer/bin/agent 'lockbox-claude:/home/dev/.claude'
-require_literal .devcontainer/bin/agent 'lockbox-codex:/home/dev/.codex'
-require_literal sandbox/.devcontainer/bin/dev 'dev-sandbox-claude-$HASH:/home/dev/.claude'
-require_literal sandbox/.devcontainer/bin/dev 'dev-sandbox-codex-$HASH:/home/dev/.codex'
+require_literal .devcontainer/bin/agent 'lockbox-$AGENT:/home/dev/.$AGENT'
+require_literal sandbox/.devcontainer/bin/dev 'dev-sandbox-$AGENT-$HASH:/home/dev/.$AGENT'
+for launcher in .devcontainer/bin/agent sandbox/.devcontainer/bin/dev; do
+  require_literal "$launcher" 'lockbox_prepare_agent_config'
+  require_literal "$launcher" 'lockbox_require_agent_layout'
+  require_literal "$launcher" 'sandbox_devcontainer_ro_mounts'
+  require_literal "$launcher" 'sandbox_ro_mount_policy_id'
+  require_literal "$launcher" 'CONTAINER_POLICY'
+  require_literal "$launcher" 'TTY_FLAGS=(-i)'
+done
+require_literal .devcontainer/agent-config-launcher.sh 'claude auth login'
+require_literal .devcontainer/agent-config-launcher.sh 'sandbox_ensure_codex_login'
+[[ ! -f CLAUDE.md ]] || fail 'obsolete repo CLAUDE.md wrapper shadows native AGENTS discovery'
 for allowlist in .devcontainer/allowlist.txt sandbox/.devcontainer/allowlist.txt; do
   require_literal "$allowlist" 'api.anthropic.com'
   require_literal "$allowlist" 'api.openai.com'

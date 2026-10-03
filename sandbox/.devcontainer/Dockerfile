@@ -48,7 +48,7 @@ RUN install -d -m 0755 /etc/apt/keyrings \
   && rm -rf /var/lib/apt/lists/*
 
 # --- Node.js — official static build (matches the other sandboxes) -----------
-ARG NODE_VERSION=24.15.0
+ARG NODE_VERSION=24.21.0
 RUN set -eux; \
     case "$(dpkg --print-architecture)" in amd64) na=x64 ;; arm64) na=arm64 ;; *) exit 1 ;; esac; \
     curl -fsSLo /tmp/node.tar.xz "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${na}.tar.xz"; \
@@ -62,7 +62,7 @@ RUN set -eux; \
     mkdir -p /usr/local/share/npm-global
 
 # --- Python 3.12 — python-build-standalone (prebuilt relocatable CPython) -----
-# Same approach as Vision: a pinned release asset (NOT resolved via the GitHub
+# Use a pinned release asset (NOT resolved via the GitHub
 # API, whose 60-req/hr unauthenticated limit fails parallel builds). python3 +
 # pip + venv + ssl, no compile. Bump by editing PY_RELEASE/PY_VERSION.
 ARG PY_RELEASE=20260510
@@ -77,7 +77,8 @@ RUN set -eux; \
     echo "${want}  /tmp/py.tar.gz" | sha256sum -c -; \
     rm /tmp/py-SHA256SUMS; \
     mkdir -p /opt/python; \
-    tar -xzf /tmp/py.tar.gz --strip-components=1 -C /opt/python; \
+    tar -xzf /tmp/py.tar.gz --strip-components=1 --no-same-owner -C /opt/python; \
+    chmod -R go-w /opt/python; \
     rm /tmp/py.tar.gz; \
     [ -x /opt/python/bin/python ] || ln -s python3 /opt/python/bin/python; \
     /opt/python/bin/python3 --version; /opt/python/bin/python3 -m venv --help >/dev/null
@@ -97,9 +98,9 @@ RUN printf 'export PATH="/usr/local/share/npm-global/bin:/opt/python/bin:/usr/lo
 # --- Claude Code CLI ----------------------------------------------------------
 # Root-owned and pinned from tool-pins.env. Hash the native optional-dependency
 # payload and restore it when npm leaves the wrapper stub.
-ARG CLAUDE_CODE_VERSION=2.1.207
-ARG CLAUDE_CODE_SHA256_ARM64=8bc14a284065383460f37981d724b8f7aa7ca93c9849d2fe367e08f03383f454
-ARG CLAUDE_CODE_SHA256_AMD64=85e7e988a392d859f90802ca21fb26e89d3c9ab527f5ed0b08df3955e34d5c83
+ARG CLAUDE_CODE_VERSION=2.1.287
+ARG CLAUDE_CODE_SHA256_ARM64=e4daf793d1e74fb0d9874dd09e98690bbfd7be515f78a87fd05b9e2b4bb33b03
+ARG CLAUDE_CODE_SHA256_AMD64=3920489a5109cff5786a1a392c25277408ff22bc796d5edb9c16a60e5a1718f0
 RUN set -eux; \
     npm install -g --no-fund --no-audit "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"; \
     case "$(dpkg --print-architecture)" in arm64) na=linux-arm64; want="${CLAUDE_CODE_SHA256_ARM64}" ;; amd64) na=linux-x64; want="${CLAUDE_CODE_SHA256_AMD64}" ;; *) exit 1 ;; esac; \
@@ -121,9 +122,9 @@ RUN set -eux; \
     claude --version
 
 # --- OpenAI Codex CLI --------------------------------------------------------
-ARG CODEX_VERSION=0.147.0
-ARG CODEX_SHA256_ARM64=e23d0be344d2496986c985cd3db61e6f649b1ddd900e6afc1b5aaabbffcbb4e2
-ARG CODEX_SHA256_AMD64=cb0a15567e9a60a5820d54b0f6ae86d504dc3805c1eab21a47f70e3eb7b73a40
+ARG CODEX_VERSION=0.160.0
+ARG CODEX_SHA256_ARM64=50b06603bdcdac39b714f5c3e68583c002b8ad8779ebfdaaf4932ff016b379c0
+ARG CODEX_SHA256_AMD64=12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad
 RUN set -eux; \
     npm install -g --no-fund --no-audit "@openai/codex@${CODEX_VERSION}"; \
     case "$(dpkg --print-architecture)" in arm64) target=aarch64-unknown-linux-musl; want="${CODEX_SHA256_ARM64}" ;; amd64) target=x86_64-unknown-linux-musl; want="${CODEX_SHA256_AMD64}" ;; *) exit 1 ;; esac; \
@@ -139,7 +140,7 @@ RUN set -eux; \
 # BAKED, not installed at runtime: post-create.sh used to `npm i -g` this unpinned
 # inside the security boundary, BEFORE it could screen anything. LIMIT: its 8
 # transitive deps are not hash-pinned — a reviewed version pin, not a closure pin.
-ARG SAFE_CHAIN_VERSION=1.5.12
+ARG SAFE_CHAIN_VERSION=1.5.24
 RUN npm install -g --no-fund --no-audit "@aikidosec/safe-chain@${SAFE_CHAIN_VERSION}" \
   && command -v safe-chain
 RUN safe-chain --version 2>/dev/null || true
@@ -152,6 +153,11 @@ ENV DISABLE_AUTOUPDATER=1
 # prefix, so they never need write access to the pinned root prefix above.
 RUN install -d -o dev -g dev -m 0755 /home/dev/.npm-global
 ENV NPM_CONFIG_PREFIX=/home/dev/.npm-global
+ENV CLAUDE_CONFIG_DIR=/home/dev/.claude
+ENV CODEX_HOME=/home/dev/.codex
+RUN mkdir -p /home/dev/.agents /home/dev/.codex/skills \
+    && ln -s /home/dev/.codex/skills /home/dev/.agents/skills \
+    && chown -R dev:dev /home/dev/.agents /home/dev/.codex
 
 # Inbound ports default to NONE; bin/dev binds a per-run /etc/egress/inbound-ports
 # (RO) over this when DEV_SANDBOX_PORTS is set. The dir must exist for the bind.
@@ -205,6 +211,8 @@ COPY bin/doctor      /usr/local/bin/dev-sandbox-doctor
 COPY bin/verify-pins /usr/local/bin/dev-sandbox-verify-pins
 RUN chmod 0755 /usr/local/bin/dev-sandbox-doctor /usr/local/bin/dev-sandbox-verify-pins
 # Privileged scripts (root-owned, source-only repo copies).
+COPY claude-guard.mjs /usr/local/share/claude-guard/guard.mjs
+RUN mkdir -p /etc/claude-code && node /usr/local/share/claude-guard/guard.mjs --managed-settings > /etc/claude-code/managed-settings.json
 COPY init-firewall.sh /usr/local/sbin/egress-firewall
 COPY perms-fix.sh     /usr/local/sbin/dev-sandbox-perms-fix
 COPY entrypoint.sh    /usr/local/sbin/dev-sandbox-entrypoint

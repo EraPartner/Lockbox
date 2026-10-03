@@ -12,10 +12,13 @@ publication is authorized; they are not prerequisites for proposing a worktree d
       so a passing result does not verify unstaged changes. Do not stage files just to run it.
 - [ ] No private-key file added (`id_rsa`, `id_ed25519`, `*.key`, or a `*.pem` whose
       content is a private key — `audit.sh` gates `.pem` on content).
-- [ ] No credential baked into a script, Dockerfile, or launcher. Claude uses
-      runtime forwarding; Codex login state may exist only in its private native
-      volume. Host auth files are never mounted or copied into the image.
+- [ ] No credential baked into a script, Dockerfile, or launcher. Both providers use native login in private named
+      volumes; explicit environment authentication remains supported. Host auth files are never mounted or copied into the image.
 - [ ] No `GH_TOKEN`/`GITHUB_TOKEN`/push credential introduced into any sandbox.
+- [ ] Authored source is explicit by default. Refresh ownership preserves private
+      edits, retires unchanged imports, and rolls back deletions and metadata.
+- [ ] Claude guard and managed settings are baked root-owned files; stale image
+      policy fails launch without relying on host Claude configuration.
 
 ## Egress & sandbox invariants
 - [ ] `base-allowlist.txt` NOT widened without justification (it hits every managed
@@ -26,7 +29,7 @@ publication is authorized; they are not prerequisites for proposing a worktree d
 - [ ] Canonical files edited HERE (`init-firewall.sh` / `squid.conf` /
       `base-allowlist.txt` / `launcher-common.sh`), then `./sync.sh` re-run — vendored
       copies + generated allowlists are back in sync (`./sync.sh --check` clean).
-- [ ] `paths.sh` target list is current (a moved/renamed project didn't silently drop
+- [ ] Local `paths.local.tsv` target list is current (a moved/renamed project didn't silently drop
       out of the egress lock); new canonical vendored file added to `vendored-files.txt`.
 - [ ] Fail-closed guarantees intact: firewall sets DROP first + writes
       `/run/egress-firewall-ok` only after `-C` verification; squid stays CONNECT-only
@@ -34,18 +37,22 @@ publication is authorized; they are not prerequisites for proposing a worktree d
 - [ ] Container privilege unchanged: non-root `dev`, no sudo, setuid/setgid stripped,
       `--cap-drop ALL` + only the six re-added caps; base image still `@sha256`-pinned;
       Node/Python/Claude/Codex pins deliberate (rebuild re-pins `verify-pins`).
-- [ ] Anti-tamper mounts preserved in launcher run args: `.devcontainer` RO overlay,
-      `.git` RO, and any relocated `core.hooksPath` (`.githooks`) RO.
+- [ ] Anti-tamper mounts verified: both launcher trees RO, `.git` RO, all effective
+      hooks paths inside the workspace RO, and stale mount-policy reuse refused.
+      Unsupported symlink/hardlink/include layouts fail closed.
 
 ## Tests & validation
 - [ ] `shellcheck *.sh .devcontainer/bin/* sandbox/.devcontainer/bin/*` clean;
       `bash -n` parses every changed script.
 - [ ] `make check` passes. Run `make audit` for medium/high-risk changes, while reporting its
       index-only coverage separately from the worktree review.
-- [ ] If `squid.conf` changed: `squid -k parse` passes.
+- [ ] If `squid.conf` changed: `squid -k parse` passes and its ClientHello helper is
+      installed in every affected image. ECH GREASE compatibility is checked.
 - [ ] For firewall/proxy/capability/mount changes: `make test`
       (`./test/egress-smoke.sh`) BOOTED the image and asserted the lock enforces
       (needs a container runtime — run on the HOST, not inside a sandbox).
+- [ ] Both CLIs discover a valid imported skill and connect a local MCP fixture.
+      Do not count files or command presence as proof of native activation.
 - [ ] For medium/high-risk changes, rebuilt the affected container(s) (`LOCKBOX_REBUILD=1` / `DEV_SANDBOX_REBUILD=1`
       / the sibling `*_REBUILD=1`) and ran `bash .devcontainer/bin/doctor` inside.
 - [ ] Trust CI's required **CI Complete** check (shell, secrets, gitleaks, vendored,
@@ -67,5 +74,3 @@ publication is authorized; they are not prerequisites for proposing a worktree d
 - [ ] Review and stage explicit paths there, then run the index secret audit before creating
       the signed commit with a clear what+why message. Publish to the authorized branch and
       create `v<VERSION>` only when releasing.
-- [ ] For Codex cloud, use the platform-managed publication path in `AGENTS.md` instead of
-      local staging or signing. Required checks and approvals must pass before an authorized merge.

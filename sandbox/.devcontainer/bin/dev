@@ -52,7 +52,22 @@ HASH="$(printf '%s' "$TARGET" | shasum 2>/dev/null | cut -c1-12 || echo target)"
 if [[ "$AGENT" == claude ]]; then NAME="dev-sandbox-$HASH"; else NAME="dev-sandbox-codex-$HASH"; fi
 IMAGE="dev-sandbox:latest"
 STAGE_DIR="$HOME/.claude-sandbox/stage/$NAME"
+# Serialize the full policy/configuration startup. The lock is released before
+# login or the interactive session, so concurrent sessions remain possible.
+# shellcheck source=../launcher-common.sh
+source "$DC/launcher-common.sh"
+# shellcheck disable=SC2034
+AGENT_CONFIG_TOOL="$DC/../../.devcontainer/agent-config.py"
+# shellcheck source=../../../.devcontainer/agent-config-launcher.sh
+source "$DC/../../.devcontainer/agent-config-launcher.sh"
+lockbox_require_staging_boundary "$TARGET" "$HOME/.claude-sandbox"
 mkdir -p "$STAGE_DIR"
+lockbox_acquire_startup_lock "$STAGE_DIR" "$0" "$@"
+CONFIG_STAGE_DIR="$STAGE_DIR/agent-input"
+# Apple Container omits a directory source when child files from that same
+# source are mounted elsewhere. Keep config and policy mount sources siblings.
+[[ ! -L "$CONFIG_STAGE_DIR" ]] || { echo 'dev: refusing symlinked configuration staging.' >&2; exit 1; }
+mkdir -p "$CONFIG_STAGE_DIR"
 
 # --- 1) Effective egress allowlist = baked base + this target's overlay -------
 # F2: the overlay is read from the TARGET repo — the SAME untrusted content this
@@ -62,8 +77,11 @@ mkdir -p "$STAGE_DIR"
 # effect. FAIL CLOSED — on a non-interactive (headless/piped) launch we can't
 # prompt, so the overlay is IGNORED and only the trusted base allowlist applies.
 ALLOWLIST_OUT="$STAGE_DIR/allowlist.txt"
-OLD_ALLOWLIST_SUM=""
-[[ -f "$ALLOWLIST_OUT" ]] && OLD_ALLOWLIST_SUM="$(shasum "$ALLOWLIST_OUT" 2>/dev/null | cut -d' ' -f1)"
+ALLOWLIST_DESIRED="$STAGE_DIR/allowlist.desired.txt"
+APPLIED_OUT="$STAGE_DIR/allowlist.applied"
+[[ ! -L "$ALLOWLIST_OUT" && ! -L "$ALLOWLIST_DESIRED" && ! -L "$APPLIED_OUT" ]] || {
+  echo 'dev: refusing symlinked allowlist state.' >&2; exit 1;
+}
 
 overlay_files=()
 for overlay in "$TARGET/.sandbox-allowlist.txt" "$TARGET/.devcontainer/allowlist.extra.txt"; do
@@ -76,8 +94,8 @@ if (( ${#overlay_files[@]} > 0 )); then
   if [[ -n "$overlay_hosts" ]]; then
     echo "dev: this target ships an egress allowlist OVERLAY (read from the workspace —" >&2
     echo "     the same untrusted content this sandbox runs). It would ADD these hosts:" >&2
-    echo "$overlay_hosts" | sed 's/^/       + /' >&2
-    for f in "${overlay_files[@]}"; do echo "     (from ${f#$TARGET/})" >&2; done
+    while IFS= read -r host; do printf '       + %s\n' "$host" >&2; done <<< "$overlay_hosts"
+    for f in "${overlay_files[@]}"; do echo "     (from ${f#"$TARGET"/})" >&2; done
     if [[ -t 0 && -t 1 ]]; then
       ans=""
       printf 'dev: allow these extra egress hosts for THIS launch? [y/N] ' >&2
@@ -92,18 +110,16 @@ if (( ${#overlay_files[@]} > 0 )); then
 fi
 
 {
-  cat "$DC/allowlist.txt" 2>/dev/null || true
+  cat "$DC/allowlist.txt"
   if (( USE_OVERLAY )); then
     for overlay in ${overlay_files[@]+"${overlay_files[@]}"}; do
-      echo "# ==== overlay: ${overlay#$TARGET/} ===="
+      echo "# ==== overlay: ${overlay#"$TARGET"/} ===="
       cat "$overlay"
     done
   fi
-} > "$ALLOWLIST_OUT"
+} > "$ALLOWLIST_DESIRED"
 
-NEW_ALLOWLIST_SUM="$(shasum "$ALLOWLIST_OUT" 2>/dev/null | cut -d' ' -f1)"
-ALLOWLIST_CHANGED=0
-[[ "$OLD_ALLOWLIST_SUM" != "$NEW_ALLOWLIST_SUM" ]] && ALLOWLIST_CHANGED=1
+NEW_ALLOWLIST_SUM="$(shasum -a 256 "$ALLOWLIST_DESIRED" | cut -d' ' -f1)"
 
 # --- 2) Inbound ports → -p flags + the firewall's inbound-ports file ----------
 INBOUND_OUT="$STAGE_DIR/inbound-ports"
@@ -120,11 +136,6 @@ if [[ -n "${DEV_SANDBOX_PORTS:-}" ]]; then
 fi
 NEW_INBOUND="$(cat "$INBOUND_OUT" 2>/dev/null || true)"
 
-# --- 3) Load shared helpers and stage provider config when needed ------------
-# shellcheck source=../launcher-common.sh
-source "$DC/launcher-common.sh"
-if [[ "$AGENT" == claude ]]; then sandbox_stage_claude_config "$NAME"; fi
-
 # --- 3b) Lock host-executed git paths READ-ONLY (.git + relocated hooks) -------
 # Bind .git — and the effective core.hooksPath dir when it relocates hooks OUTSIDE
 # .git (e.g. .githooks) — :ro OVER the RW workspace so an in-container agent can
@@ -132,13 +143,16 @@ if [[ "$AGENT" == claude ]]; then sandbox_stage_claude_config "$NAME"; fi
 # would later execute OUTSIDE the sandbox (a VM→host escape on `git commit`). Local
 # commit/push is git-agent's job, not this box's. See sandbox_git_ro_mounts.
 sandbox_git_ro_mounts "$TARGET" /workspaces/project
+sandbox_devcontainer_ro_mounts "$TARGET" /workspaces/project
+sandbox_ro_mount_policy_id
+LAUNCH_POLICY="$RO_MOUNT_POLICY_ID:agent-config-v3:input-v1"
 
 # --- 4) Build (skip when the image already exists, unless rebuild requested) --
 # F7: `container build` is cached but still spins up the builder VM on every launch
 # (startup latency). Skip it when the image already exists AND no rebuild was asked
-# for. Trade-off: a sync.sh change to the BAKED files (init-firewall.sh, squid.conf,
-# entrypoint, post-*) then only lands on the next DEV_SANDBOX_REBUILD=1 — the
-# allowlist + inbound-ports are bind-mounted, so those stay live regardless.
+# for. A sync.sh change to baked files requires DEV_SANDBOX_REBUILD=1. The
+# allowlist is mounted and applied only after the confirmed restart below;
+# inbound port bindings and firewall ports still require container recreation.
 if [[ "${DEV_SANDBOX_REBUILD:-0}" == 1 ]] || ! container image inspect "$IMAGE" >/dev/null 2>&1; then
   container build -t "$IMAGE" "$DC" >/dev/null
   # Free the ~2GB build-shim RAM now the image is built; it auto-restarts on the
@@ -148,49 +162,58 @@ fi
 
 # --- 5) Idempotent run: reuse running / start stopped / else create ----------
 echo "dev: target $TARGET  (container $NAME)" >&2
+# Install cleanup before reuse checks. Keep-warm failures still abort startup;
+# policy confirmation is invalidated before any transition and cannot be reused.
+CID="$NAME"
+sandbox_install_stop_trap "$CID" "${DEV_SANDBOX_STOP_ON_EXIT:-1}"
 if [[ "${DEV_SANDBOX_REBUILD:-0}" == 1 ]]; then
+  rm -f "$APPLIED_OUT"
   container rm -f "$NAME" >/dev/null 2>&1 || true
 fi
 PORTS_CHANGED_MSG="dev: WARN: DEV_SANDBOX_PORTS changed, but the -p bindings and the firewall's
      inbound-ports are fixed at CREATE — rebuild to apply: DEV_SANDBOX_REBUILD=1 $LAUNCHER"
-if container ls -q 2>/dev/null | grep -qx "$NAME"; then
-  # Reuse RUNNING. squid loaded its ACLs at config parse; the bind-mounted
-  # allowlist is already live in-container but won't take effect until squid
-  # reconfigures. WIDENING needs this; NARROWING would SILENTLY not apply (a
-  # security gap) — so reconfigure whenever the staged allowlist content changed. (F1)
-  if (( ALLOWLIST_CHANGED )); then
-    echo "dev: egress allowlist changed — reloading squid in the running container..." >&2
-    container exec "$NAME" squid -k reconfigure 2>/dev/null \
-      || echo "dev: WARN: squid reconfigure failed; apply the new allowlist with DEV_SANDBOX_REBUILD=1 $LAUNCHER" >&2
+POLICY_CONFIRMED=0
+RUNNING_NAMES="$(container ls -q)" || { echo 'dev: cannot inspect running containers; refusing policy change.' >&2; exit 1; }
+ALL_NAMES="$(container ls -aq)" || { echo 'dev: cannot inspect existing containers; refusing policy change.' >&2; exit 1; }
+if grep -qx "$NAME" <<< "$RUNNING_NAMES"; then
+  GENERATION="$(lockbox_container_generation "$NAME")" || {
+    echo 'dev: cannot identify the running container boot; refusing policy reuse.' >&2; exit 1;
+  }
+  EXPECTED_APPLIED="lockbox-allowlist-v1 $GENERATION $NEW_ALLOWLIST_SUM"
+  if [[ -f "$APPLIED_OUT" && "$(cat "$APPLIED_OUT")" == "$EXPECTED_APPLIED" ]] \
+      && cmp -s "$ALLOWLIST_OUT" "$ALLOWLIST_DESIRED"; then
+    POLICY_CONFIRMED=1
+  else
+    # A successful HUP only acknowledges signal delivery. It cannot prove that
+    # Squid parsed and applied a narrowing. Restart before changing mounted
+    # bytes, then confirm this fresh boot after the readiness barrier below.
+    rm -f "$APPLIED_OUT"
+    echo 'dev: egress policy is changed or unconfirmed — restarting the container.' >&2
+    container stop "$NAME" >/dev/null || {
+      echo 'dev: container stop failed; the mounted allowlist was not changed.' >&2; exit 1;
+    }
+    AFTER_STOP_NAMES="$(container ls -q)" || { echo 'dev: cannot verify the container stopped; refusing policy change.' >&2; exit 1; }
+    if grep -qx "$NAME" <<< "$AFTER_STOP_NAMES"; then
+      echo 'dev: container is still running after stop; refusing policy change.' >&2; exit 1
+    fi
+    # Preserve the bind-mounted file inode. Atomic replacement would leave an
+    # existing single-file mount attached to the retired inode on restart.
+    cat "$ALLOWLIST_DESIRED" > "$ALLOWLIST_OUT"
+    container start "$NAME" >/dev/null
   fi
   [[ "$OLD_INBOUND" != "$NEW_INBOUND" ]] && echo "$PORTS_CHANGED_MSG" >&2
-elif container ls -aq 2>/dev/null | grep -qx "$NAME"; then
+elif grep -qx "$NAME" <<< "$ALL_NAMES"; then
+  rm -f "$APPLIED_OUT"
+  cat "$ALLOWLIST_DESIRED" > "$ALLOWLIST_OUT"
   container start "$NAME" >/dev/null
   [[ "$OLD_INBOUND" != "$NEW_INBOUND" ]] && echo "$PORTS_CHANGED_MSG" >&2
 else
-  # Pre-flight only the sources required by the selected agent.
-  missing_mounts=()
-  required_mounts=("$HOME/.gitconfig")
-  if [[ "$AGENT" == claude ]]; then
-    required_mounts+=("$HOME/.claude/hooks/guard.mjs" "$HOME/.claude/hooks/managed-settings.json")
-    AGENT_MOUNTS=(
-      -v "dev-sandbox-claude-$HASH:/home/dev/.claude"
-      -v "$STAGE_DIR:/home/dev/.claude-stage:ro"
-      -v "$HOME/.claude/hooks/guard.mjs:/usr/local/share/claude-guard/guard.mjs:ro"
-      -v "$HOME/.claude/hooks/managed-settings.json:/etc/claude-code/managed-settings.json:ro"
-    )
-  else
-    AGENT_MOUNTS=(-v "dev-sandbox-codex-$HASH:/home/dev/.codex")
-  fi
-  for _src in "${required_mounts[@]}"; do
-    [[ -e "$_src" ]] || missing_mounts+=("$_src")
-  done
-  if (( ${#missing_mounts[@]} > 0 )); then
-    echo "dev: missing required host file(s) for the read-only bind mounts:" >&2
-    for _m in "${missing_mounts[@]}"; do echo "       - $_m" >&2; done
-    echo "     Create the selected agent's required host files, then re-run." >&2
-    exit 1
-  fi
+  rm -f "$APPLIED_OUT"
+  cat "$ALLOWLIST_DESIRED" > "$ALLOWLIST_OUT"
+  AGENT_MOUNTS=(-v "dev-sandbox-$AGENT-$HASH:/home/dev/.$AGENT"
+    -v "$CONFIG_STAGE_DIR:/home/dev/.agent-stage-root:ro")
+  GIT_HOST_MOUNTS=()
+  [[ ! -f "$HOME/.gitconfig" ]] || GIT_HOST_MOUNTS=(-v "$HOME/.gitconfig:/home/dev/.gitconfig-host:ro")
   container run -d --name "$NAME" \
     --init \
     --cap-drop ALL \
@@ -202,9 +225,9 @@ else
     -e DEVCONTAINER=true \
     -e DEV_SANDBOX=true \
     -e SANDBOX_AGENT="$AGENT" \
+    -e SANDBOX_LAUNCH_POLICY="$LAUNCH_POLICY" \
     -e DISABLE_TELEMETRY=1 \
     -e DISABLE_ERROR_REPORTING=1 \
-    -e BASH_ENV=/home/dev/.safe-chain/scripts/init-posix.sh \
     -e NODE_USE_ENV_PROXY=1 \
     -e HTTP_PROXY=http://127.0.0.1:3128 \
     -e HTTPS_PROXY=http://127.0.0.1:3128 \
@@ -214,27 +237,15 @@ else
     -e no_proxy=localhost,127.0.0.1,::1 \
     -v "$TARGET:/workspaces/project" \
     ${GIT_RO_MOUNTS[@]+"${GIT_RO_MOUNTS[@]}"} \
+    ${DEVCONTAINER_RO_MOUNTS[@]+"${DEVCONTAINER_RO_MOUNTS[@]}"} \
     -v "dev-sandbox-config-$HASH:/home/dev/.config" \
     -v "dev-sandbox-local-$HASH:/home/dev/.local" \
     ${AGENT_MOUNTS[@]+"${AGENT_MOUNTS[@]}"} \
-    -v "$HOME/.gitconfig:/home/dev/.gitconfig-host:ro" \
+    ${GIT_HOST_MOUNTS[@]+"${GIT_HOST_MOUNTS[@]}"} \
     -v "$ALLOWLIST_OUT:/etc/squid/allowlist.txt:ro" \
     -v "$INBOUND_OUT:/etc/egress/inbound-ports:ro" \
     "$IMAGE" >/dev/null
 fi
-CID="$NAME"
-
-# --- On-exit hooks: config-sync push (OPT-IN) + power-down --------------------
-# Installed HERE — immediately after the container is created/started, and BEFORE
-# the proxy-wait, lifecycle replay, and pin gate below — so that ANY hard abort in
-# that window (a post-start `exit 1` on a missing firewall sentinel, a verify-pins
-# drift abort, etc.) still runs cleanup and does NOT orphan the ~6 GB VM running,
-# pinning RAM. Config push is opt-in (DEV_SANDBOX_AUTOSYNC=1). Power-down defaults
-# ON so a container you start cleans up after itself; DEV_SANDBOX_STOP_ON_EXIT=0
-# keeps it WARM for instant reuse. (F: orphaned-container on early abort)
-if [[ "$AGENT" == claude ]]; then AUTOSYNC="${DEV_SANDBOX_AUTOSYNC:-0}"; else AUTOSYNC=0; fi
-sandbox_install_autosync_trap "dev" "$CID" "$AUTOSYNC" "${DEV_SANDBOX_STOP_ON_EXIT:-1}"
-
 # SANDBOX_AGENT is fixed at container creation. Detect stale/manual containers
 # before lifecycle hooks use the wrong provider configuration or diagnostics.
 # The cleanup trap is already installed so this abort cannot orphan the VM.
@@ -245,26 +256,41 @@ if [[ "$CONTAINER_AGENT" != "$AGENT" ]]; then
   exit 1
 fi
 
-# --- 6) Wait for the egress proxy, then replay lifecycle as dev ---------------
-# (post-create once, post-start every start). The proxy-wait (entrypoint applies
-# firewall → squid) runs at the TOP of this exec rather than as its own
-# `container exec`: on the common warm-reuse path the first probe succeeds
-# immediately, so a separate exec paid a full container-CLI + XPC round-trip
-# (~100-300ms) on every launch just to find that out. It is still a required
-# BARRIER — on `container start` of a stopped container it keeps post-start.sh's
-# /run/egress-firewall-ok check from racing the still-running entrypoint — it just
-# doesn't need to be its own exec. 0.2s poll, 150 tries ≈ the same 30s budget.
-# (A probe failure inside `... && break` does not trip set -e; a genuinely absent
-# proxy is caught by post-start.sh's firewall-sentinel check.)
+CONTAINER_POLICY="$(container exec "$NAME" printenv SANDBOX_LAUNCH_POLICY 2>/dev/null || true)"
+if [[ "$CONTAINER_POLICY" != "$LAUNCH_POLICY" ]]; then
+  echo "launcher: stale read-only mount/configuration policy; recreate with: DEV_SANDBOX_REBUILD=1 $LAUNCHER" >&2
+  exit 1
+fi
+lockbox_require_managed_policy "$NAME"
+lockbox_require_agent_layout "$NAME" "DEV_SANDBOX_REBUILD=1 $LAUNCHER"
+
+# --- 6) Confirm policy, then replay lifecycle as dev -------------------------
+lockbox_wait_proxy "$NAME"
+MOUNTED_ALLOWLIST_SUM="$(container exec --user dev -e BASH_ENV= "$NAME" sha256sum /etc/squid/allowlist.txt | cut -d' ' -f1)"
+if [[ "$MOUNTED_ALLOWLIST_SUM" != "$NEW_ALLOWLIST_SUM" ]]; then
+  rm -f "$APPLIED_OUT"
+  echo 'dev: mounted allowlist differs from the desired policy; refusing launch.' >&2
+  exit 1
+fi
+GENERATION="$(lockbox_container_generation "$NAME")"
+if (( POLICY_CONFIRMED )) && [[ "$EXPECTED_APPLIED" != "lockbox-allowlist-v1 $GENERATION $NEW_ALLOWLIST_SUM" ]]; then
+  rm -f "$APPLIED_OUT"
+  echo 'dev: container restarted during policy validation; retry to confirm a fresh boot.' >&2
+  exit 1
+fi
+APPLIED_TEMP="$(mktemp "$STAGE_DIR/.allowlist-applied.XXXXXX")"
+printf 'lockbox-allowlist-v1 %s %s\n' "$GENERATION" "$NEW_ALLOWLIST_SUM" > "$APPLIED_TEMP"
+mv -f "$APPLIED_TEMP" "$APPLIED_OUT"
+
 container exec --user dev "$NAME" bash -lc '
   set -e
-  for _ in $(seq 1 150); do (exec 3<>/dev/tcp/127.0.0.1/3128) 2>/dev/null && break; sleep 0.2; done
   [[ -f /home/dev/.postcreate-done ]] || { bash /usr/local/share/dev-sandbox/post-create.sh && touch /home/dev/.postcreate-done; }
   bash /usr/local/share/dev-sandbox/post-start.sh'
 
-# --- 7) Forward provider credentials only to the final agent process ----------
-EXEC_ENV=()
-if [[ "$AGENT" == claude ]]; then sandbox_forward_llm_creds "dev-sandbox-claude-code-token"; fi
+lockbox_prepare_agent_config "$NAME" "$CONFIG_STAGE_DIR" "${DEV_SANDBOX_CONFIG_REFRESH:-${DEV_SANDBOX_CLAUDE_CONFIG_REFRESH:-0}}"
+# Safe Chain startup hooks belong only to dev processes, never root startup.
+EXEC_ENV=(-e BASH_ENV=/home/dev/.safe-chain/scripts/init-posix.sh)
+lockbox_forward_mcp_environment "$NAME"
 
 # --- 8) Launch-integrity gate (cached for this running container boot) --------
 # The canonical helper accepts only an exact root-owned cache record bound to
@@ -287,18 +313,18 @@ rel="${HOST_PWD#"$TARGET"}"
 [[ "$rel" != "$HOST_PWD" && -n "$rel" ]] && CONTAINER_CWD="/workspaces/project/${rel#/}"
 
 # --- 10) Authenticate Codex on first use, then open the selected agent --------
-# (The on-exit config-sync/power-down trap was installed at step 5, right after the
+# (The on-exit container cleanup trap was installed at step 5, right after the
 # container came up, so an early abort can't orphan the VM.)
 if [[ -n "${DEV_SANDBOX_SHELL:-}" ]]; then
   set -- bash
 else
   set -- "$AGENT" "$@"
 fi
-TTY_FLAGS=()
-[[ -t 0 && -t 1 ]] && TTY_FLAGS=(-i -t)
-if [[ "$AGENT" == codex && -z "${DEV_SANDBOX_SHELL:-}" ]]; then
-  sandbox_ensure_codex_login dev "$NAME" dev \
-    "Re-run $LAUNCHER in a terminal for device login."
+TTY_FLAGS=(-i)
+[[ -t 0 && -t 1 ]] && TTY_FLAGS+=(-t)
+lockbox_release_startup_lock
+if [[ -z "${DEV_SANDBOX_SHELL:-}" ]]; then
+  lockbox_ensure_agent_login dev "$NAME" "Re-run $LAUNCHER in a terminal for native login."
 fi
 set +e
 # F6: set the working dir with `container exec -w` (apple/container 1.0.0) instead

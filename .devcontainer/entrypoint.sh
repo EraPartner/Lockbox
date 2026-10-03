@@ -75,7 +75,9 @@ done
 # Graceful shutdown on `container stop` (SIGTERM): close squid cleanly so the
 # next start doesn't inherit a half-open state. (The launcher's `container run
 # --init` runs an init that reaps zombies and forwards this signal here.)
-shutdown() { log "shutting down..."; squid -k shutdown 2>/dev/null || true; exit 0; }
+# pid_filename is disabled, and root lacks CAP_KILL after the capability drop.
+# Send control signals as the proxy owner without granting another capability.
+shutdown() { log "shutting down..."; runuser -u proxy -- pkill -TERM -x squid 2>/dev/null || true; exit 0; }
 trap shutdown TERM INT
 
 log "Setup complete. Container ready (dev sessions via 'container exec')."
@@ -98,7 +100,7 @@ while true; do
   fi
   # Bound the egress audit log (logfile_rotate keeps 1 old generation).
   if [[ -f "$ACCESS_LOG" ]] && (( $(stat -c %s "$ACCESS_LOG" 2>/dev/null || echo 0) > LOG_CAP )); then
-    squid -k rotate 2>/dev/null || true
+    runuser -u proxy -- pkill -USR1 -x squid 2>/dev/null || true
   fi
   # Keep the audit log world-readable so `dev` (no longer in the proxy group)
   # can inspect it; squid recreates it 0640 on start/rotate.

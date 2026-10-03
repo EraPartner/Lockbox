@@ -9,8 +9,8 @@ name: CI
 # parse + lint clean, no secrets are baked in (audit.sh regex
 # scan + a gitleaks backstop), the in-repo vendored copies match their canonical
 # sources, no Dockerfile misconfigs slip in (Trivy), squid.conf parses, and — by
-# booting the image under a privileged runner — the egress lock actually enforces
-# (off-allowlist blocked, non-CONNECT cleartext refused). Workflow security
+# booting both images under a privileged runner — the egress lock actually enforces
+# packet, TLS, mount policy and native skill/MCP discovery for both providers. Workflow security
 # (script injection, unpinned actions) is covered by CodeQL in codeql.yml —
 # the only CodeQL-analyzable surface here, since shell has no analyzer.
 #
@@ -60,7 +60,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: bash -n (parse check)
         run: |
           set -euo pipefail
@@ -89,7 +89,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: audit.sh
         run: ./audit.sh
 
@@ -104,7 +104,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
       - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
@@ -119,9 +119,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
-      - name: Check generated cloud agreement
-        run: python3 .codex/cloud/check-instructions.py
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: sync.sh --check (self-only)
         # EGRESS_SELF_ONLY restricts the target list to BOTH in-repo devcontainers
         # (the sibling fleet repos aren't checked out here). Unlike the old hand-rolled
@@ -140,6 +138,24 @@ jobs:
         run: ./test/provider-parity.sh
       - name: Sync failure regressions
         run: python3 test/test-sync.py
+      - name: Claude readiness regressions
+        run: python3 test/test-claude-readiness.py
+      - name: Shared doctor decisions
+        run: python3 test/test-doctor.py
+      - name: Startup serialization
+        run: python3 test/test-launch-lock.py
+      - name: Provider-neutral configuration regressions (Python 3.11+)
+        run: |
+          python3 -c 'import sys; assert sys.version_info >= (3, 11)'
+          python3 test/test-agent-config.py
+      - name: Baked Claude guard regressions
+        run: python3 test/test-claude-guard.py
+      - name: Read-only mount planner regressions
+        run: python3 test/test-mount-policy.py
+      - name: Bounded ClientHello policy regressions
+        run: python3 test/test-clienthello-policy.py
+      - name: Runtime fixture syntax
+        run: python3 -c 'import ast, pathlib; [ast.parse(pathlib.Path(p).read_text()) for p in ("test/runtime-policy.py", "test/provider-features.py", "test/test-native-launcher.py")]'
 
   dockerfile:
     name: dockerfile lint
@@ -152,9 +168,9 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: hadolint
-        uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387 # v3.5.0
+        uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387
         with:
           dockerfile: ${{ matrix.dockerfile }}
           # DL3008 (pin apt versions) is a deliberate tradeoff here — the image
@@ -170,7 +186,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: squid -k parse
         # squid.conf isn't shell, so the shell job ignores it; validate its directive
         # syntax here so a semantically-broken proxy config fails CI instead of only
@@ -182,6 +198,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends squid-openssl openssl
           sudo install -d /etc/squid/certs /var/lib/squid /var/log/squid /var/spool/squid
           sudo cp squid.conf /etc/squid/squid.conf
+          sudo install -m 0755 clienthello-policy.py /usr/local/bin/lockbox-clienthello-policy
           sudo cp sandbox/.devcontainer/allowlist.txt /etc/squid/allowlist.txt
           openssl req -x509 -newkey rsa:2048 -days 1 -nodes \
             -subj "/CN=ci-squid-parse" -keyout /tmp/k.pem -out /tmp/c.pem >/dev/null 2>&1
@@ -191,16 +208,26 @@ jobs:
           sudo squid -k parse
 
   egress-test:
-    name: devcontainer builds + egress lock enforces
+    name: ${{ matrix.kind }} builds + provider runtime policy
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     if: github.event_name != 'schedule'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - kind: lockbox
+            context: .devcontainer
+            image: lockbox-scoped:ci
+          - kind: generic
+            context: sandbox/.devcontainer
+            image: lockbox-generic:ci
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: set up buildx
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
       - name: build image (GHA layer cache)
         # The Dockerfile is BUILT here (hadolint/Trivy only lint/scan it), catching a
         # build that lints clean but breaks. Layers are cached in the GHA cache
@@ -208,22 +235,25 @@ jobs:
         # touch only the final cheap COPY layers, and without a persisted cache CI
         # re-paid the full apt + Node/Python download + npm install build (~4-8 min,
         # the long pole of the pipeline) on every run. Cache-hit builds take seconds.
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc
         with:
-          context: sandbox/.devcontainer
-          tags: dev-sandbox:ci
+          context: ${{ matrix.context }}
+          tags: ${{ matrix.image }}
           load: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.kind }}
+          cache-to: type=gha,scope=${{ matrix.kind }},mode=max
       - name: functional egress smoke test
-        # The image is BOOTED and the egress lock asserted end-to-end. The gating
-        # assertions (firewall sentinel up, off-allowlist host blocked, non-CONNECT
-        # cleartext refused) are internet-INDEPENDENT — squid denies them locally — so
-        # this is a deterministic gate; only the on-allowlist reachability check needs
-        # egress and it is a soft warning. Needs NET_ADMIN for iptables, hence a real
-        # boot here rather than in the self-contained lint jobs above. SKIP_BUILD=1
-        # reuses the image built (with layer caching) in the previous step.
-        run: RUNTIME=docker IMAGE=dev-sandbox:ci SKIP_BUILD=1 ./test/egress-smoke.sh
+        # Each image boots fresh Claude and Codex containers. Lifecycle/pins/login
+        # run as dev; disposable fixture mounts prove actual RO enforcement with
+        # a RW control. Local TLS controls and firewall counters require no internet.
+        # IPv6 external probes explicitly skip when the runner supplies no route.
+        run: ./test/egress-smoke.sh
+        env:
+          RUNTIME: docker
+          IMAGE_KIND: ${{ matrix.kind }}
+          BUILD_CONTEXT: ${{ matrix.context }}
+          IMAGE: ${{ matrix.image }}
+          SKIP_BUILD: "1"
 
   # ─────────────────────────────────────────────────────────────────────────────
   # Trivy — Dockerfile / IaC misconfiguration scan (HIGH/CRITICAL). The `misconfig`
@@ -242,7 +272,7 @@ jobs:
       contents: read
       security-events: write # required to upload SARIF to GitHub Security
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       - name: Run Trivy scan (SARIF — fail on HIGH/CRITICAL)
         # ONE scan does both duties: Trivy writes the SARIF report BEFORE applying
@@ -261,7 +291,7 @@ jobs:
 
       - name: Upload Trivy SARIF to GitHub Security
         if: always()
-        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63
         with:
           sarif_file: trivy-results.sarif
           category: trivy

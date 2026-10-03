@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# Shared host-side helpers for the sandbox launchers (Vision bin/claude,
-# Watchman bin/claude, Brain bin/agent, git-agent bin/git-agent, sandbox
-# bin/dev). Vendored into each .devcontainer/ by LockBox/sync.sh and
-# sourced by the launcher as "$(dirname "$0")/../launcher-common.sh".
+# Shared host-side helpers for sandbox launchers. Vendored into each managed
+# .devcontainer/ by LockBox/sync.sh and sourced by the launcher as
+# "$(dirname "$0")/../launcher-common.sh".
 #
 # WHY: stage_claude_config(), the Keychain credential block, and the
-# autosync-on-exit trap were copy-pasted near-verbatim across all launchers and
+# stop-on-exit trap were copy-pasted near-verbatim across all launchers and
 # had begun to drift. This is the single source; per-launcher specifics
 # (git-agent's push token + ssh signing, the charter) stay in the individual
 # launchers and run alongside these.
@@ -347,42 +346,26 @@ esac'
   fi
 }
 
-# --- Install an exit trap: push config back, then optionally power down --------
-# Usage: sandbox_install_autosync_trap <profile> <container-id> <autosync:0|1> [stop_on_exit:0|1]
-# On shell exit the trap runs, at most once:
-#   1) if <autosync>=1, `<profile>-claude-sync push <cid>` via fish (idempotent;
-#      no-op if fish is absent) — pushes in-container config back to the host.
-#   2) if [stop_on_exit]=1, `container stop <cid>` — powers the sandbox VM down.
-# WHY stop_on_exit: the launchers start the box detached (`container run -d`) with a
-# keep-alive PID 1, so it NEVER stops itself; left running it pins its whole `-m`
-# allocation (4–6 GB) as a live VM until the next reboot. It defaults to 0 so an
-# INTERACTIVE session keeps the container WARM for instant reuse; headless/scheduled
-# launchers pass 1 to reclaim that RAM when the run ends. The push (step 1) runs
-# BEFORE the stop (step 2) because the sync needs the container still up.
-sandbox_install_autosync_trap() {
-  local profile="$1" cid="$2" enabled="$3" stop_on_exit="${4:-0}"
-  _SANDBOX_AUTOSYNC_PROFILE="$profile"
-  _SANDBOX_AUTOSYNC_CID="$cid"
-  _SANDBOX_AUTOSYNC_ENABLED="$enabled"
+# --- Install an exit trap: optionally stop the detached VM --------------------
+# Usage: sandbox_install_stop_trap <container-id> [stop_on_exit:0|1]
+# Runs at most once. Each launcher selects its stop policy; config stays private.
+# Detached containers keep their memory allocation until explicitly stopped.
+sandbox_install_stop_trap() {
+  local cid="$1" stop_on_exit="${2:-0}"
+  _SANDBOX_STOP_CID="$cid"
   _SANDBOX_STOP_ON_EXIT="$stop_on_exit"
-  _SANDBOX_AUTOSYNC_DONE=0
-  trap _sandbox_autosync_push EXIT
+  _SANDBOX_STOP_DONE=0
+  trap _sandbox_stop_on_exit EXIT
 }
-_sandbox_autosync_push() {
-  [[ "${_SANDBOX_AUTOSYNC_DONE:-0}" == 1 ]] && return 0
-  _SANDBOX_AUTOSYNC_DONE=1
-  # 1) Config-sync push (opt-in; needs the container still running).
-  if [[ "${_SANDBOX_AUTOSYNC_ENABLED:-0}" == 1 && -n "${_SANDBOX_AUTOSYNC_CID:-}" ]] \
-     && command -v fish >/dev/null 2>&1; then
-    fish -c "${_SANDBOX_AUTOSYNC_PROFILE}-claude-sync push ${_SANDBOX_AUTOSYNC_CID}" \
-      || echo "launcher: auto config-sync push failed — run '${_SANDBOX_AUTOSYNC_PROFILE}-claude-sync push' to retry." >&2
-  fi
-  # 2) Power down the detached VM (opt-in) so it stops pinning RAM. PID 1 traps
+_sandbox_stop_on_exit() {
+  [[ "${_SANDBOX_STOP_DONE:-0}" == 1 ]] && return 0
+  _SANDBOX_STOP_DONE=1
+  # Stop the detached VM so it stops pinning RAM. PID 1 traps
   # SIGTERM for a graceful shutdown; `container stop` is a no-op if already stopped.
-  if [[ "${_SANDBOX_STOP_ON_EXIT:-0}" == 1 && -n "${_SANDBOX_AUTOSYNC_CID:-}" ]] \
+  if [[ "${_SANDBOX_STOP_ON_EXIT:-0}" == 1 && -n "${_SANDBOX_STOP_CID:-}" ]] \
      && command -v container >/dev/null 2>&1; then
-    container stop "${_SANDBOX_AUTOSYNC_CID}" >/dev/null 2>&1 \
-      || echo "launcher: 'container stop ${_SANDBOX_AUTOSYNC_CID}' failed — stop it manually to free RAM." >&2
+    container stop "${_SANDBOX_STOP_CID}" >/dev/null 2>&1 \
+      || echo "launcher: 'container stop ${_SANDBOX_STOP_CID}' failed — stop it manually to free RAM." >&2
   fi
 }
 
@@ -393,8 +376,8 @@ _sandbox_autosync_push() {
 # change (e.g. a NARROWING) silently does not take effect until a rebuild. Compare
 # the running container's /etc/squid/allowlist.txt against the freshly-vendored
 # canonical file and warn. Never auto-recreates — a rebuild is the operator's call
-# (the generic dev-sandbox bind-mounts its allowlist and uses `squid -k
-# reconfigure` instead; this is only for the baked-image launchers). (F14)
+# The generic sandbox bind-mounts its allowlist and restarts before a changed or
+# unconfirmed policy can open a session. This helper is for baked-image launchers.
 sandbox_warn_stale_allowlist() {
   local cname="$1" canonical="$2" hint="$3" tmp
   [[ -f "$canonical" ]] || return 0
@@ -407,71 +390,256 @@ sandbox_warn_stale_allowlist() {
   rm -f "$tmp"
 }
 
-# --- Lock host-executed git paths READ-ONLY (.git + relocated hooks) ----------
-# Usage: sandbox_git_ro_mounts <host_repo_root> <container_workspace_path>
-# Populates the global GIT_RO_MOUNTS array with `-v …:ro` flags the caller splices
-# into its `container run`. Declare-safe expand at the call site:
-#   sandbox_git_ro_mounts "$PROJECT_ROOT" /workspaces/Foo
-#   ... ${GIT_RO_MOUNTS[@]+"${GIT_RO_MOUNTS[@]}"} ...
-#
-# WHY: git hooks run on the HOST. The documented workflow is commit/push on your
-# Mac (the box carries no push credential and mounts .git RO), so any hook script
-# an in-container agent can write into the RW workspace would later execute on the
-# host, as you, with Keychain + ssh-agent + gh token in reach — a VM→host escape
-# that bypasses the hypervisor and fires on a routine `git commit`. This closes it:
-#
-#   1) .git RO           — blocks history rewrite AND planting a .git/hooks/* script.
-#   2) core.hooksPath RO — `core.hooksPath` RELOCATES hooks OUTSIDE .git (Vision,
-#      Watchman, Brain and this repo all set it to `.githooks`), so the RO .git
-#      mount does NOT cover them; they inherit the writable workspace. Lock the
-#      effective hooks dir too. An absolute hooksPath (outside the workspace) or one
-#      already under .git needs no extra mount. If it is SET but the dir is ABSENT,
-#      an agent could create it in the RW workspace and plant a hook — overlay an
-#      empty RO dir so that path can't be written. (Cost, verified against
-#      apple/container: mounting a nonexistent subpath of the RW workspace makes the
-#      runtime create the mountpoint, leaving a spurious EMPTY `<hooksPath>/` in the
-#      host workspace — cosmetic, and only in this misconfigured edge case; real
-#      hooks dirs mount cleanly.) Relative values resolve against the repo root
-#      (where git runs the hooks from); `..` is rejected.
-#
-# Generalizes git-agent's empty-hooks overlay for the RW-workspace launchers.
-# bash-3.2: indexed array, no `local -n`; `git` may be absent (falls back to .git).
-sandbox_git_ro_mounts() {
-  local repo="$1" ws="$2" hp abs src empty
-  GIT_RO_MOUNTS=()
-  [[ -n "$repo" && -e "$repo/.git" ]] || return 0
-  # `.git` must be a DIRECTORY. When it is a FILE — a linked worktree or a
-  # submodule — the real git dir (with the hooks an in-container agent must not be
-  # able to plant) lives OUTSIDE $repo, so an RO mount of the pointer file would
-  # NOT protect it: a worktree/submodule conversion would silently reopen the very
-  # host-hook escape this function exists to close. Refuse rather than mount
-  # something ineffective (fail-closed). All current fleet repos use a `.git` dir.
-  if [[ ! -d "$repo/.git" ]]; then
-    echo "launcher: refusing to mount '$repo' — its .git is a FILE (linked worktree or" >&2
-    echo "  submodule); the real git dir with host-executed hooks is outside the workspace" >&2
-    echo "  and can't be safely locked read-only here. Use a standard (non-worktree) clone." >&2
-    return 1
-  fi
-  GIT_RO_MOUNTS+=(-v "$repo/.git:$ws/.git:ro")
-
-  hp="$(git -C "$repo" config core.hooksPath 2>/dev/null || true)"
-  [[ -n "$hp" ]] || return 0
-  case "$hp" in
-    /*)          return 0 ;;  # absolute → outside the workspace mount, not ours
-    .git|.git/*) return 0 ;;  # already under the RO .git mount above
-    *..*)        return 0 ;;  # reject path traversal (defense in depth)
-  esac
-  abs="$repo/$hp"
-  if [[ -d "$abs" ]]; then
-    src="$abs"                # real versioned hooks: RO blocks host-side tampering
-  else
-    empty="$HOME/.claude-sandbox/empty-hooks"  # absent dir: block creating one
-    mkdir -p "$empty" 2>/dev/null || return 0
-    src="$empty"
-  fi
-  GIT_RO_MOUNTS+=(-v "$src:$ws/${hp}:ro")
+# --- Read-only workspace policy (Git metadata, hooks, launcher trees) --------
+# All helpers remain compatible with the macOS Bash 3.2. They inspect paths;
+# they never change Git config/index or execute a repository hook.
+sandbox_mount_refuse() {
+  echo "launcher: refusing unsafe read-only mount policy — $*" >&2
+  return 1
 }
 
-# ─── vendored by LockBox v0.1.0 · canonical sha256:131528c1d266e295dad5b1fc0aa1a8f04c915b1890e0f366e2193e5c70ce6daa ───
+# Resolve dot components without following symlinks. Checking each component
+# BEFORE consuming '..' prevents symlink/../ aliases from escaping protection.
+# Missing trailing components are permitted for the immutable empty overlay.
+# Colon and control characters cannot be represented safely in `-v src:dst:ro`.
+sandbox_mount_normalize_path() {
+  local path="$1" rest part current="" next
+  case "$path" in
+    /*) ;;
+    *) sandbox_mount_refuse "expected an absolute path: $path"; return 1 ;;
+  esac
+  case "$path" in
+    *:*|*[[:cntrl:]]*) sandbox_mount_refuse "path has an unsupported mount delimiter"; return 1 ;;
+  esac
+  rest="${path#/}"
+  while [[ -n "$rest" ]]; do
+    part="${rest%%/*}"
+    if [[ "$rest" == */* ]]; then rest="${rest#*/}"; else rest=""; fi
+    case "$part" in
+      ''|.) continue ;;
+      ..) current="${current%/*}"; continue ;;
+    esac
+    next="$current/$part"
+    if [[ -L "$next" ]]; then
+      sandbox_mount_refuse "symlink component is unsupported: $next"; return 1
+    fi
+    if [[ -n "$rest" && -e "$next" && ! -d "$next" ]]; then
+      sandbox_mount_refuse "non-directory path component: $next"; return 1
+    fi
+    current="$next"
+  done
+  printf '%s\n' "${current:-/}"
+}
+
+# A directory overlay does not protect symlink targets or another hard-linked
+# name in the RW workspace. These layouts are deliberately unsupported. Refuse
+# scan errors too; an unreadable subtree is not evidence that it is safe.
+sandbox_mount_check_tree() {
+  local tree="$1" aliases
+  [[ -d "$tree" && ! -L "$tree" ]] || {
+    sandbox_mount_refuse "expected a real directory: $tree"; return 1;
+  }
+  aliases="$(find "$tree" \( -type l -o \( -type f -links +1 \) \) -print)" || {
+    sandbox_mount_refuse "cannot inspect protected directory: $tree"; return 1;
+  }
+  [[ -z "$aliases" ]] || {
+    sandbox_mount_refuse "symlink or hard-linked file inside protected directory: $tree"; return 1;
+  }
+}
+
+sandbox_mount_empty_source() {
+  local repo="$1" empty entries
+  empty="$(sandbox_mount_normalize_path "$HOME/.claude-sandbox/empty-hooks")" || return 1
+  case "$empty" in
+    "$repo"|"$repo"/*) sandbox_mount_refuse "empty overlay source is inside the writable workspace"; return 1 ;;
+  esac
+  mkdir -p "$empty" || {
+    sandbox_mount_refuse "cannot prepare immutable empty directory: $empty"; return 1;
+  }
+  sandbox_mount_check_tree "$empty" || return 1
+  entries="$(find "$empty" -mindepth 1 -print)" || return 1
+  [[ -z "$entries" ]] || {
+    sandbox_mount_refuse "empty overlay contains files: $empty"; return 1;
+  }
+  printf '%s\n' "$empty"
+}
+
+# Append one in-workspace directory to the selected array. Paths are normalized
+# host paths; caller supplies a canonical repo and container workspace root.
+sandbox_mount_directory() {
+  local repo="$1" ws="$2" path="$3" kind="$4" src rel
+  [[ "$path" != "$repo" ]] || {
+    sandbox_mount_refuse "protecting the workspace root would disable editing: $repo"; return 1;
+  }
+  case "$path" in "$repo"/*) ;; *) return 0 ;; esac
+  rel="${path#"$repo"/}"
+  if [[ -e "$path" ]]; then
+    sandbox_mount_check_tree "$path" || return 1
+    src="$path"
+  else
+    src="$(sandbox_mount_empty_source "$repo")" || return 1
+  fi
+  case "$kind" in
+    git) GIT_RO_MOUNTS+=(-v "$src:$ws/$rel:ro") ;;
+    devcontainer) DEVCONTAINER_RO_MOUNTS+=(-v "$src:$ws/$rel:ro") ;;
+    *) sandbox_mount_refuse "unknown mount policy kind"; return 1 ;;
+  esac
+}
+
+# Git config includes are executable policy too: a writable included file could
+# relocate hooks after preflight. Git enumerates includes with their origins and
+# expands home-directory syntax; relative values use the containing config dir.
+# Refuse in-workspace includes outside the protected metadata tree, even when
+# currently missing or conditionally inactive. A later file creation or changed
+# branch must not make that policy writable. No config file is modified here.
+sandbox_mount_check_git_includes() {
+  local repo="$1" tmp status origin entry value config path count=0
+  tmp="$(mktemp "${TMPDIR:-/tmp}/lockbox-git-includes.XXXXXX")" || {
+    sandbox_mount_refuse "cannot prepare Git include inspection"; return 1;
+  }
+  if git -C "$repo" config --path --null --includes --show-origin \
+      --get-regexp '^include(if\..*)?\.path$' >"$tmp"; then status=0; else status=$?; fi
+  if [[ "$status" == 1 && ! -s "$tmp" ]]; then rm -f "$tmp"; return 0; fi
+  if [[ "$status" != 0 ]]; then
+    rm -f "$tmp"
+    sandbox_mount_refuse "Git could not enumerate config includes"; return 1
+  fi
+  # Failure branches unlink the owned temporary file and immediately return;
+  # they do not overwrite any input that the loop will continue reading.
+  # shellcheck disable=SC2094
+  while IFS= read -r -d '' origin; do
+    if ! IFS= read -r -d '' entry || [[ "$entry" != *$'\n'* ]]; then
+      rm -f "$tmp"
+      sandbox_mount_refuse "malformed Git include origin records"; return 1
+    fi
+    case "$origin" in
+      file:*) config="${origin#file:}" ;;
+      *) rm -f "$tmp"; sandbox_mount_refuse "unsupported Git include origin"; return 1 ;;
+    esac
+    case "$config" in /*) ;; *) config="$repo/$config" ;; esac
+    config="$(sandbox_mount_normalize_path "$config")" || { rm -f "$tmp"; return 1; }
+    value="${entry#*$'\n'}"
+    case "$value" in /*) path="$value" ;; *) path="${config%/*}/$value" ;; esac
+    path="$(sandbox_mount_normalize_path "$path")" || { rm -f "$tmp"; return 1; }
+    case "$path" in
+      "$repo/.git/"*) ;;
+      "$repo"|"$repo"/*)
+        rm -f "$tmp"
+        sandbox_mount_refuse "Git config include is in the writable workspace: $path"; return 1 ;;
+    esac
+    count=$((count + 1))
+  done <"$tmp"
+  rm -f "$tmp"
+  [[ "$count" != 0 && -z "$origin" ]] || {
+    sandbox_mount_refuse "empty or incomplete Git include origin records"; return 1;
+  }
+}
+
+# A broad non-Git target can contain another clone's executable Git policy.
+# Support only one Git boundary: the selected root. Discover every launcher
+# tree without following directory symlinks, and keep filenames NUL-delimited.
+# Root metadata is pruned; nested metadata (directories, files or symlinks) is
+# refused rather than accidentally exposed through the writable parent mount.
+sandbox_mount_discover_workspace() {
+  local repo="$1" tmp path normalized i j key LC_ALL=C
+  SANDBOX_DEVCONTAINER_PATHS=()
+  tmp="$(mktemp "${TMPDIR:-/tmp}/lockbox-workspace-mounts.XXXXXX")" || {
+    sandbox_mount_refuse "cannot prepare workspace boundary inspection"; return 1;
+  }
+  if ! find "$repo" -name .git -print0 -prune -o -name .devcontainer -print0 >"$tmp"; then
+    rm -f "$tmp"
+    sandbox_mount_refuse "cannot inspect all workspace Git and launcher boundaries"; return 1
+  fi
+  # Unlinking the owned input on a failure is safe: the function then returns.
+  # shellcheck disable=SC2094
+  while IFS= read -r -d '' path; do
+    if [[ "${path##*/}" == .git ]]; then
+      [[ "$path" == "$repo/.git" ]] && continue
+      rm -f "$tmp"
+      sandbox_mount_refuse "nested Git boundary is unsupported: $path"; return 1
+    fi
+    normalized="$(sandbox_mount_normalize_path "$path")" || { rm -f "$tmp"; return 1; }
+    SANDBOX_DEVCONTAINER_PATHS+=("$normalized")
+  done <"$tmp"
+  rm -f "$tmp"
+  [[ -z "$path" ]] || {
+    sandbox_mount_refuse "incomplete workspace boundary records"; return 1;
+  }
+  # BSD sort lacks portable NUL sorting. Launcher trees are few, so an indexed
+  # array insertion sort provides deterministic ordering on Bash 3.2 as well.
+  for ((i=1; i<${#SANDBOX_DEVCONTAINER_PATHS[@]}; i++)); do
+    key="${SANDBOX_DEVCONTAINER_PATHS[$i]}"
+    j=$((i - 1))
+    while (( j >= 0 )) && [[ "${SANDBOX_DEVCONTAINER_PATHS[$j]}" > "$key" ]]; do
+      SANDBOX_DEVCONTAINER_PATHS[j + 1]="${SANDBOX_DEVCONTAINER_PATHS[$j]}"
+      j=$((j - 1))
+    done
+    SANDBOX_DEVCONTAINER_PATHS[j + 1]="$key"
+  done
+}
+
+# Populate GIT_RO_MOUNTS. Git's effective path expands '~', honors config
+# includes, and distinguishes unset hooksPath from an explicitly empty value.
+# External paths (including /dev/null) are outside the writable workspace;
+# absolute/traversal aliases INSIDE it receive the same overlay as .githooks.
+sandbox_git_ro_mounts() {
+  local repo="$1" ws="$2" hp path
+  GIT_RO_MOUNTS=()
+  repo="$(sandbox_mount_normalize_path "$repo")" || return 1
+  ws="$(sandbox_mount_normalize_path "$ws")" || return 1
+  sandbox_mount_discover_workspace "$repo" || return 1
+  [[ -e "$repo/.git" || -L "$repo/.git" ]] || return 0
+  [[ -d "$repo/.git" && ! -L "$repo/.git" && ! -e "$repo/.git/commondir" && ! -L "$repo/.git/commondir" ]] || {
+    sandbox_mount_refuse "use a standard clone with a real .git directory (no worktree, symlink, or commondir)"; return 1;
+  }
+  sandbox_mount_directory "$repo" "$ws" "$repo/.git" git || return 1
+  sandbox_mount_check_git_includes "$repo" || return 1
+  # Preserve trailing newlines in the actual pathname so delimiter validation
+  # cannot accidentally protect a different directory after shell trimming.
+  hp="$(git -C "$repo" rev-parse --git-path hooks && printf '\001')" || {
+    sandbox_mount_refuse "Git could not resolve its effective hooks directory"; return 1;
+  }
+  hp="${hp%$'\001'}"
+  hp="${hp%$'\n'}"
+  [[ -n "$hp" ]] || { sandbox_mount_refuse "Git returned an empty hooks path"; return 1; }
+  case "$hp" in /*) path="$hp" ;; *) path="$repo/$hp" ;; esac
+  path="$(sandbox_mount_normalize_path "$path")" || return 1
+  case "$path" in "$repo/.git"|"$repo/.git/"*) return 0 ;; esac
+  sandbox_mount_directory "$repo" "$ws" "$path" git
+}
+
+# Protect every present launcher tree, including arbitrary nested directories.
+# Absent trees remain absent; unrelated project directories are not created.
+sandbox_devcontainer_ro_mounts() {
+  local repo="$1" ws="$2" path
+  DEVCONTAINER_RO_MOUNTS=()
+  repo="$(sandbox_mount_normalize_path "$repo")" || return 1
+  ws="$(sandbox_mount_normalize_path "$ws")" || return 1
+  sandbox_mount_discover_workspace "$repo" || return 1
+  for path in ${SANDBOX_DEVCONTAINER_PATHS[@]+"${SANDBOX_DEVCONTAINER_PATHS[@]}"}; do
+    sandbox_mount_directory "$repo" "$ws" "$path" devcontainer || return 1
+  done
+}
+
+# Creation/reuse gates bind their saved identity to the FULL ordered RO plan.
+# NUL separators prevent ambiguous serialization of paths containing spaces.
+# Version this prefix when supported-layout or mount semantics change.
+sandbox_ro_mount_policy_id() {
+  local digest
+  digest="$(set -o pipefail
+    printf '%s\0' lockbox-ro-mounts-v2 \
+      ${GIT_RO_MOUNTS[@]+"${GIT_RO_MOUNTS[@]}"} \
+      ${DEVCONTAINER_RO_MOUNTS[@]+"${DEVCONTAINER_RO_MOUNTS[@]}"} | shasum -a 256
+  )" || { sandbox_mount_refuse "cannot hash the read-only mount policy"; return 1; }
+  digest="${digest%% *}"
+  [[ ${#digest} == 64 && "$digest" != *[!0-9a-f]* ]] || {
+    sandbox_mount_refuse "invalid read-only mount policy digest"; return 1;
+  }
+  # Consumed by the launcher's creation/reuse gate.
+  # shellcheck disable=SC2034
+  RO_MOUNT_POLICY_ID="$digest"
+}
+
+# ─── vendored by LockBox v0.1.0 · canonical sha256:7c9f7201b2b428def172f5d645cf54147ca35f0c6987112e532139b196d1238c ───
 # Generated from the canonical source by LockBox/sync.sh — DO NOT EDIT HERE.
 # Edit LockBox/launcher-common.sh and re-run ./sync.sh.

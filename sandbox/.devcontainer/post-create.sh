@@ -17,25 +17,16 @@ esac
 # 127.0.0.1:3128 in the SAME shell immediately before invoking this script, so the
 # proxy is already up by the time anything here touches the network.
 
-# --- Seed ~/.claude from the SANITIZED stage the host launcher produced --------
-STAGE=/home/dev/.claude-stage
-if [[ "$AGENT" == claude && ! -f /home/dev/.claude/settings.json && -d "$STAGE/dot-claude" ]]; then
-  echo "[post-create] Seeding ~/.claude from sanitized stage..."
-  rsync -a --ignore-errors "$STAGE/dot-claude/" /home/dev/.claude/ \
-    || echo "[post-create] WARN: ~/.claude rsync seed had errors." >&2
-fi
-if [[ "$AGENT" == claude && ! -f /home/dev/.claude.json && -f "$STAGE/claude.json" ]]; then
-  cp "$STAGE/claude.json" /home/dev/.claude.json
-  chmod 0600 /home/dev/.claude.json
-fi
+# Provider configuration is initialized by the host launcher after lifecycle
+# readiness. Claude uses its private volume; there is no per-create host merge.
 
 # --- Supply-chain protection: wire up the BAKED safe-chain --------------------
 # Screens package installs against the malware list (malware-list.aikido.dev,
 # allowlisted in squid). `safe-chain setup` writes shell wrappers; BASH_ENV (set
-# in bin/dev's `container run`) sources them into every bash session so npm/bun/pip
-# installs an agent runs mid-session are screened. Matches Vision/Watchman/Napoleon/
-# Brain — this box previously promised it (Dockerfile + doctor) but never installed
-# it, so installs here were NOT screened. (F12)
+# for the final dev process) sources them into bash sessions so npm/bun/pip
+# installs an agent runs mid-session are screened. This box previously promised
+# screening (Dockerfile + doctor) but never installed it, so installs here were
+# not screened.
 #
 # safe-chain is now BAKED INTO THE IMAGE at a reviewed pin (see ../../tool-pins.env
 # and the Dockerfile). It used to be `npm install -g @aikidosec/safe-chain` right
@@ -55,25 +46,19 @@ echo "[post-create] safe-chain wired up (baked pin, no runtime fetch)."
 
 # --- git: identity only (no signing key, no push token in this box) -----------
 # Include the bind-mounted host gitconfig (user.name/email) and mark the
-# workspace safe (the bind mount has non-dev ownership). Commits made here are
-# UNSIGNED; push them from the dedicated `git-agent` sandbox (which signs).
+# workspace safe (the bind mount has non-dev ownership). Git state is mounted
+# read-only; staging, signing, committing and pushing belong to git-agent.
 if [[ ! -f /home/dev/.gitconfig || ! -s /home/dev/.gitconfig ]]; then
   cat > /home/dev/.gitconfig <<'EOF'
 [include]
     path = /home/dev/.gitconfig-host
 [safe]
     directory = /workspaces/project
-# This sandbox does not forward a signing key. Don't fail commits if the host
-# gitconfig sets commit.gpgsign=true; override it off locally.
-[commit]
-    gpgsign = false
-[tag]
-    gpgsign = false
 EOF
 fi
 
 echo "[post-create] Done. Generic full-dev sandbox:"
 echo "[post-create]   - workspace /workspaces/project is READ-WRITE"
 echo "[post-create]   - egress is locked to the allowlist (base + this project's overlay)"
-echo "[post-create]   - commit locally if you like; PUSH from the 'git-agent' sandbox"
+echo "[post-create]   - edit and test here; stage, sign, commit and push in 'git-agent'"
 echo "[post-create]   - selected agent: $AGENT"
