@@ -41,8 +41,11 @@ LockBox applies two independent outbound controls when a container starts:
    addresses are blocked before the proxy exception.
 2. `squid.conf` accepts HTTPS `CONNECT` requests only. It reads the TLS Server Name
    Indication (SNI), splices allowlisted connections without decrypting them, and
-   terminates everything else. End-to-end TLS remains intact; LockBox does not install
-   a man-in-the-middle certificate authority.
+   terminates everything else. `clienthello-policy.py` also checks the visible TLS
+   ClientHello and rejects missing or malformed SNI and Encrypted ClientHello (ECH),
+   including GREASE. End-to-end TLS remains intact; LockBox does not install a
+   man-in-the-middle certificate authority. The helper compares SNI with the CONNECT
+   hostname; the booted egress fixture checks rejection of different allowlisted names.
 
 Startup succeeds only after the packet rules are verified and
 `/run/egress-firewall-ok` is written. If Squid stops, the packet layer still prevents
@@ -53,7 +56,8 @@ Additional controls include:
 - a non-root `dev` user and no `sudo`;
 - all set-user-ID and set-group-ID bits removed from the image;
 - all Linux capabilities dropped, with only the small startup set added back;
-- read-only overlays for `.devcontainer`, `.git`, and any relocated Git hooks path;
+- read-only overlays for top-level and nested `.devcontainer` directories, `.git`,
+  and effective Git hooks paths and their workspace aliases;
 - no Git push credential inside an ordinary sandbox;
 - private, provider-specific configuration volumes; and
 - a launch gate that rejects drift in pinned tools.
@@ -73,7 +77,8 @@ container system start
 
 Docker can run the egress smoke test in continuous integration, but it is not the
 primary host runtime. The repository itself is Bash and container infrastructure; it
-has no application build step or root `package.json`.
+has no application build step or root `package.json`. Every provider launch
+requires host Python 3.11 or newer.
 
 ## Quick start
 
@@ -110,7 +115,9 @@ DEV_SANDBOX_AGENT=codex /path/to/LockBox/sandbox/.devcontainer/bin/dev
 ```
 
 Each provider uses a separate container and native configuration volume. A launcher
-refuses to reuse a container created for a different provider.
+refuses to reuse a container created for a different provider or an older mount and
+configuration policy. Recreate it with `LOCKBOX_REBUILD=1` or
+`DEV_SANDBOX_REBUILD=1`; named volumes retain private configuration and login state.
 
 ## Canonical and generated files
 
@@ -123,9 +130,11 @@ inside a managed `.devcontainer`.
 | `squid.conf` | Canonical CONNECT-only SNI allowlist proxy |
 | `base-allowlist.txt` | Minimum hostname set shared by every managed sandbox |
 | `launcher-common.sh` | Shared host-side launcher, staging, mount, and cleanup helpers |
-| `claude-stage-items.txt` | Curated declarative entries allowed into Claude staging |
+| `clienthello-policy.py` | Visible TLS ClientHello validation for the Squid splice gate |
+| `claude-stage-items.txt` | Curated staging manifest used by sibling Claude launchers |
+| `.devcontainer/agent-config.py` | Shared curated imports and native provider adapters for the in-repo launchers |
 | `vendored-files.txt` | Manifest of files copied into each managed sandbox |
-| `paths.sh` | Authoritative list of managed `.devcontainer` directories |
+| `paths.sh` | Shared discovery of repository targets and local fleet configuration |
 | `sync.sh` | Vendors canonical files and generates effective allowlists; `--target=/absolute/managed/.devcontainer` restricts regeneration to one registered target |
 | `audit.sh` | Scans the Git index for secrets and private keys |
 | `tool-pins.env` | Reviewed versions and hashes for baked tools |
@@ -155,7 +164,10 @@ base-allowlist.txt
 
 After changing either input, run `./sync.sh`. Most managed images bake the effective
 allowlist and must be rebuilt. The general-purpose sandbox bind-mounts its effective
-list and reloads Squid when the content changes.
+list. Changed or unconfirmed policy requires a successful stop and fresh start;
+the launcher confirms proxy readiness, mounted bytes and container generation
+before opening a session. Unchanged confirmed policy reuses the warm container.
+Such a restart interrupts other sessions using the same container.
 
 The general-purpose sandbox can also consider a target workspace's
 `.sandbox-allowlist.txt`. Because that file belongs to the project being opened, an
@@ -164,41 +176,67 @@ launches ignore the untrusted overlay and remain fail-closed.
 
 ## Managing sandbox targets
 
-`paths.sh` is the single source of truth for all `.devcontainer` directories managed by
-`sync.sh`, `audit.sh`, and the pin checks. Register a new sandbox there before relying
-on LockBox to update it. Missing targets are errors by default because silently
-skipping a moved repository would leave stale security controls in place.
+`paths.sh` provides shared target discovery for syncing and pin checks. A fresh
+clone manages only LockBox's two in-repository sandboxes. Personal deployment
+locations are kept in `paths.local.tsv`, which Git ignores. Copy
+`paths.example.tsv` to that file, replace the example path, and add one absolute
+`.devcontainer` path per line. Paths may contain spaces. An optional stable project
+label follows a literal tab; otherwise the parent directory name supplies the label.
+Use a stable label when two differently named checkouts should generate identical
+allowlist comments. The file is data and is never executed as shell code.
 
-The checked-in file contains the local deployment layout. Adapt its target list for
-your environment, or use its environment overrides where appropriate:
+Register external sandboxes in that local file before relying on LockBox to update
+them. Missing targets and duplicate entries are errors. No sibling repository is
+assumed or modified by a fresh clone.
 
 | Variable | Purpose |
 |---|---|
-| `CODE_ROOT` | Root directory used by managed target paths |
+| `EGRESS_FLEET_FILE` | Alternate local target file; an explicitly configured missing file is an error |
 | `EGRESS_REPO` | LockBox checkout root; normally detected automatically |
-| `EGRESS_SELF_ONLY=1` | Limit checks to the in-repo generic sandbox, as used in CI |
+| `EGRESS_SELF_ONLY=1` | Check only the two in-repository sandboxes; ignore local fleet data, as in CI |
 
 `./sync.sh --allow-missing` can downgrade missing targets to warnings for an explicit,
 temporary partial sync. Do not use it as the normal deployment path.
 
-## Provider authentication
+## Provider authentication and configuration
 
-Claude and Codex share the image and security boundary but keep separate runtime
-credentials.
+Both providers use official login inside their private native volumes. Claude uses
+`claude auth login`; Codex uses `codex login --device-auth`. Open the displayed URL
+in a host browser and follow the CLI prompts. Ordinary in-repo launches do not read
+Keychain or copy host authentication caches. Explicit environment authentication is
+also supported: `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` for Claude, and
+`OPENAI_API_KEY` or enterprise `CODEX_ACCESS_TOKEN` for Codex. A noninteractive first
+launch needs an existing private login or supported environment authentication.
 
-Claude receives a token at launch and uses a sanitized configuration stage. Raw host
-configuration is not mounted into the container. Codex never mounts host `~/.codex`;
-on its first interactive launch it uses the official device-code flow. An
-`OPENAI_API_KEY` or enterprise `CODEX_ACCESS_TOKEN` can bootstrap the corresponding
-non-browser login instead. The resulting Codex cache remains in its private container
-volume.
+`LOCKBOX_CONFIG_SOURCE` selects a common authored configuration directory, defaulting
+to `~/.config/lockbox/agents`. It can hold `AGENTS.md`, `skills/`, `mcp.json`, and
+provider-specific `claude/` and `codex/` entries. This is the only source by default.
+`LOCKBOX_CONFIG_IMPORT_NATIVE=1` opts into selected authored native host files.
+First initialization preserves existing private entries.
+Ordinary starts reuse private state. Refresh deliberately with
+`LOCKBOX_CONFIG_REFRESH=1` or `DEV_SANDBOX_CONFIG_REFRESH=1`; replaced files get
+private rollback backups. Refresh removes retired imported entries only when their
+private values still match the ownership record, and preserves local edits. Imports
+and lifecycle changes are locked per profile. Identical refreshes avoid writes,
+and five completed importer-owned backups are retained. Interrupted imports or
+incomplete rollback block startup pending private recovery. Credentials, sessions,
+history and memory are excluded.
+There is no configuration export or host-memory copy-back.
 
-No provider credential is baked into the image or copied into the workspace. A running
-agent can access its own credential, so revoke that credential if the sandbox is
-suspected to be compromised.
+Repository instructions use `AGENTS.md` for both pinned CLIs. Claude's builtin AGENTS
+support is enabled even when a project also has Claude instruction files. Shared
+global instructions become a native Claude `CLAUDE.md` adapter inside its volume.
+Host Claude global `.claude.json` is never read: shared Model Context Protocol (MCP)
+servers must be declared explicitly. User hooks are stripped from imported settings;
+plugin metadata is retained, but Linux commands, plugin discovery and endpoint access
+still need verification. Both images bake a root-owned Claude guard and managed
+settings, so a clean host needs no Claude guard installation. Read [provider configuration](docs/provider-configuration.md)
+for exact import entries, precedence, MCP declarations and login limits.
 
-Repository guidance is exposed through `AGENTS.md` for Codex and `CLAUDE.md` for
-Claude.
+A running agent can access its own credential. Revoke it if the sandbox is suspected
+to be compromised. Both launchers install cleanup before startup checks can abort.
+Set `LOCKBOX_STOP_ON_EXIT=0` or `DEV_SANDBOX_STOP_ON_EXIT=0` to keep a container
+running. Piped standard input is forwarded for either provider.
 
 ## Toolchain pinning
 
@@ -257,6 +295,12 @@ COPY init-firewall.sh /usr/local/sbin/egress-firewall
 COPY squid.conf /etc/squid/squid.conf
 COPY allowlist.txt /etc/squid/allowlist.txt
 ```
+
+The generated firewall embeds the canonical ClientHello companion and installs
+it as a root-owned executable before publishing the readiness sentinel. Existing
+fleet Dockerfile firewall COPY integration is sufficient. The standalone helper
+is also vendored for inspection. Deployment requires successful fleet sync, affected image rebuilds,
+Squid parse, booted egress and real first-login checks.
 
 Its root entrypoint must run `/usr/local/sbin/egress-firewall`, verify
 `/run/egress-firewall-ok`, start Squid, and only then continue the container lifecycle.

@@ -8,8 +8,7 @@ before proposing or committing a change.
 ## Project
 
 LockBox is the **canonical devcontainer egress lock + shared launcher helpers**
-for a fleet of hardened, egress-locked coding-agent sandboxes (Vision, Watchman,
-Brain, Napoleon-relay, git-agent, dotfiles, VaultLens, and a generic dev box). The
+for hardened, egress-locked coding-agent sandboxes configured by each deployment. The
 two in-repo images support both Claude Code and OpenAI Codex; sibling images may
 remain provider-specific until they adopt the same CLI block. It is
 bash/shell + container infra — **no `package.json`, no build step, no app**. You
@@ -19,7 +18,7 @@ self-check with `./sync.sh --check` + `./audit.sh`.
 It plays **two roles at once**:
 
 1. **The canonical source.** The root-level `init-firewall.sh`, `squid.conf`,
-   `base-allowlist.txt`, and `launcher-common.sh` are the ONE copy of the egress
+   `base-allowlist.txt`, `clienthello-policy.py`, and `launcher-common.sh` are the ONE copy of the egress
    firewall, the SNI-allowlist proxy, and the host-side launcher helpers. Edit
    them **here**, run `./sync.sh`, and they are vendored (content + a provenance
    stamp) into every managed `.devcontainer/` listed in `paths.sh`. Before this
@@ -37,7 +36,8 @@ test can also drive `docker` (CI does).
 ## Before any task
 
 1. **Know which layer you are touching.** A root-level canonical file
-   (`init-firewall.sh`, `squid.conf`, `base-allowlist.txt`, `launcher-common.sh`)
+   (`init-firewall.sh`, `squid.conf`, `clienthello-policy.py`, `base-allowlist.txt`,
+   `launcher-common.sh`)
    affects the WHOLE fleet — after editing it you MUST run `./sync.sh` or the
    pre-commit `sync.sh --check` will block the commit. A per-project
    `allowlist.extra.txt` affects one container. The baked `allowlist.txt` is
@@ -46,9 +46,9 @@ test can also drive `docker` (CI does).
    **`.devcontainer/README.md`** (the full threat model for the sandbox itself).
    `CHANGELOG.md` records why each hardening decision was made — check it before
    "fixing" something that looks odd; it is usually load-bearing.
-3. `paths.sh` is the authoritative list of managed devcontainers. `README.md`
-   prose still says "six" in places — trust `paths.sh`'s `EGRESS_DEVCONTAINERS`
-   array over any prose count.
+3. `paths.sh` discovers managed devcontainers. External targets and stable labels
+   belong in ignored `paths.local.tsv` (see `paths.example.tsv`). Trust the resulting
+   `EGRESS_DEVCONTAINERS` array over any prose count.
 
 ## How egress is enforced (the core model)
 
@@ -61,9 +61,12 @@ Two independent, **fail-closed** layers, applied by the root entrypoint on every
    after verifying the policy and key rules with `iptables -C`; a missing sentinel fails startup.
 2. **In-container squid SNI proxy** (`squid.conf`, peek+splice, **CONNECT-only**, HTTPS-only) —
    splices allowed hostnames without decrypting (**end-to-end TLS preserved, no MITM / CA
-   injection**) and terminates the rest. A non-CONNECT absolute-URI request is denied, ECH-hidden
-   SNI has no allowlisted name and is terminated, and the entrypoint supervises squid. If squid
-   dies, the packet layer keeps egress denied until it restarts.
+   injection**) and terminates the rest. A non-CONNECT absolute-URI request is denied.
+   `clienthello-policy.py` checks the visible handshake because Squid can otherwise fall back
+   to the CONNECT hostname when SNI is absent. Missing or malformed SNI and Encrypted
+   ClientHello (ECH), including GREASE, are rejected. The helper compares SNI with CONNECT;
+   the booted egress fixture verifies this with different allowlisted names. The entrypoint supervises Squid; the packet layer
+   keeps direct egress denied while the proxy is down.
 
 Defense-in-depth on top: **safe-chain** screens `npm`/`pip` installs against
 `malware-list.aikido.dev`, and the **launch-integrity gate** (`bin/verify-pins`) aborts the launch
@@ -81,8 +84,9 @@ into the baked `.devcontainer/allowlist.txt`, which is **GENERATED — DO NOT ED
 minimal — anything added there widens egress for all managed containers.** To change egress: edit
 the base or an extra, run `./sync.sh`, then **rebuild** the affected container so the new allowlist
 is re-baked and re-read. LockBox and sibling provider launchers bake the list into the image and
-warn when a reused container is stale. The generic sandbox bind-mounts its list and may reconfigure
-squid, but it accepts a target-workspace overlay only after interactive confirmation; noninteractive
+warn when a reused container is stale. The generic sandbox bind-mounts its list and
+restarts for changed or unconfirmed policy before recording the container generation
+and mounted hash. It accepts a target-workspace overlay only after interactive confirmation; noninteractive
 launches ignore that untrusted overlay and fail closed.
 
 ## Security invariants (do not weaken without explicit sign-off)
@@ -90,22 +94,25 @@ launches ignore that untrusted overlay and fail closed.
 - **Allowlist minimalism.** Don't widen `base-allowlist.txt` casually; prefer a
   per-project `allowlist.extra.txt`. Justify every new host in a comment.
 - **Generated files stay generated.** Never hand-edit a baked `allowlist.txt` or a
-  vendored `init-firewall.sh`/`squid.conf`/`launcher-common.sh`; `sync.sh --check`
+  vendored `init-firewall.sh`/`squid.conf`/`clienthello-policy.py`/`launcher-common.sh`; `sync.sh --check`
   will flag the drift.
 - **Container stays non-root.** `dev` (UID 1000), no sudo, all setuid/setgid bits
   stripped image-wide. `container run` uses `--cap-drop ALL` then re-adds only
   `NET_ADMIN CHOWN DAC_OVERRIDE FOWNER SETUID SETGID` (needed for the entrypoint's
   iptables/perms-fix/squid drop). apple/container has **no `--security-opt`** — the
   per-container VM boundary is the isolation control; don't assume `no-new-privileges`.
-- **No secrets baked in.** Claude credentials are forwarded at runtime. Codex
-  credentials are created at runtime by official login and remain in the private
-  native `~/.codex` volume; host `~/.codex` is never mounted. `audit.sh` scans the
-  git **index** for tokens and private keys. No git push credential enters a sandbox.
-- **Anti-tamper mounts.** `.devcontainer` is re-mounted **read-only over** the RW
-  workspace so an in-container agent can't rewrite the host launcher/Dockerfile and
-  escape on the next launch. `.git` is mounted **read-only**, and any relocated
-  `core.hooksPath` (e.g. `.githooks`) is locked RO too — a host-executed git hook
-  is a VM→host escape. Preserve all three when touching launcher run args.
+- **No secrets baked in.** Both providers log in through their native CLI and keep
+  authentication in private named volumes. Explicit environment authentication is
+  optional; the in-repo launchers do not read Keychain or host login caches. Host
+  native configuration is copied only through the curated importer, never mounted.
+  `audit.sh` scans the git **index** for tokens and private keys. No Git push
+  credential enters an editing sandbox.
+- **Anti-tamper mounts.** Top-level and nested `.devcontainer` directories are
+  overlaid read-only on the writable workspace. `.git`, every effective
+  `core.hooksPath`, and workspace aliases to those hook targets are read-only.
+  Unsupported symlink, hardlink and Git include layouts are refused. A saved
+  mount-policy fingerprint prevents stale container reuse. Preserve these controls
+  when touching launcher arguments; host-executed hooks are a VM-to-host escape.
 - **Reproducible/pinned image.** Base image pinned by `@sha256`; Node and Python
   pinned by version + SHA-256-verified download; Claude and Codex CLIs pinned and installed
   into a root-owned prefix the `dev` user can't overwrite. Bump deliberately.
@@ -113,7 +120,7 @@ launches ignore that untrusted overlay and fail closed.
   silently stops receiving the egress lock (the exact bug this repo exists to
   prevent). Keep it current; a missing target is a hard failure in `sync.sh`.
 
-## How the fish launchers consume it
+## How the launchers consume it
 
 The in-repo entry points are:
 
@@ -124,10 +131,47 @@ The in-repo entry points are:
 - `sandbox/.devcontainer/bin/dev-claude` and `bin/dev-codex` target the current
   repository. Plain `bin/dev` requires `DEV_SANDBOX_AGENT`; it has no provider
   default.
-- Claude credentials are forwarded at runtime. Codex uses its private `~/.codex`
-  volume and starts official device-code login on first interactive use; an
-  `OPENAI_API_KEY` or enterprise `CODEX_ACCESS_TOKEN` can bootstrap login instead.
-- Sibling projects keep their existing launchers and vendored egress helpers.
+- Both providers use native private login, with optional explicit environment
+  authentication. Claude uses `claude auth login`; Codex uses device-code login.
+- Sibling projects keep their existing launchers. The generated firewall installs
+  the root-owned ClientHello companion before publishing its readiness sentinel.
+  Existing Dockerfile firewall COPY integration is sufficient. Successful fleet sync,
+  rebuilds and runtime checks are required before deployment.
+
+`.devcontainer/agent-config.py` and `.devcontainer/agent-config-launcher.sh` implement both
+in-repo providers' configuration policy. `LOCKBOX_CONFIG_SOURCE` defaults to
+`~/.config/lockbox/agents`, with shared `AGENTS.md`, `skills/`, `mcp.json` and native
+`claude/`/`codex/` adapters. The default reads only this source. Selected native host
+entries require `LOCKBOX_CONFIG_IMPORT_NATIVE=1`.
+First initialization preserves private existing values. Ordinary starts reuse private
+state. `LOCKBOX_CONFIG_REFRESH=1` or `DEV_SANDBOX_CONFIG_REFRESH=1` refreshes present
+files with private rollback backups. Retired owned entries are removed only when
+unchanged from the ownership record; local edits and private entries survive.
+Host startup locks serialize lifecycle and policy changes and release before login
+or interactive sessions. Private-volume locks serialize imports. Identical refreshes
+avoid writes; five completed importer-owned backups are retained. An interrupted
+transaction or incomplete rollback leaves a journal that blocks startup until private
+recovery. Credentials, sessions, history and memory are
+excluded; nothing is exported or copied back to the host.
+
+Claude uses `CLAUDE_CONFIG_DIR=/home/dev/.claude`. Codex uses
+`CODEX_HOME=/home/dev/.codex` and file credential storage. No in-repo Keychain lookup
+or legacy global-state migration is needed. Import runs after the lifecycle barrier
+and requires host Python 3.11 or newer on every launch. Both images bake the
+root-owned Claude guard and managed settings; launch rejects missing or stale policy.
+
+Both pinned CLIs read project `AGENTS.md`; the Claude builtin is enabled to read it
+alongside Claude instruction files. Shared global instructions use a private native
+Claude `CLAUDE.md` adapter. Host Claude `.claude.json` is never imported. Shared Model
+Context Protocol (MCP) servers must be declared explicitly. User hooks are stripped
+and plugin metadata retained, but command availability, plugin discovery and endpoint
+access are not guaranteed. MCP environment forwarding uses the read-only host
+snapshot as its name allowlist; private state cannot authorize new host variables.
+Git push credential variables are refused.
+See [`docs/provider-configuration.md`](docs/provider-configuration.md) for exact
+imports, precedence and limits. Both launchers install cleanup before startup checks,
+forward piped standard input and enforce the same strict cached pin gate. Runtime
+proxy, mount and real-login checks remain required before deployment.
 
 ## Adding / modifying a sandbox
 
@@ -136,8 +180,8 @@ The in-repo entry points are:
   changed, also `squid -k parse`.
 - **Change egress for one project:** edit its `allowlist.extra.txt`, `./sync.sh`,
   rebuild. For all projects: edit `base-allowlist.txt` (justify it), `./sync.sh`.
-- **Onboard a new managed container:** add its `.devcontainer` path to the
-  `EGRESS_DEVCONTAINERS` array in `paths.sh`, then `./sync.sh`.
+- **Onboard a new managed container:** add its absolute `.devcontainer` path to
+  ignored `paths.local.tsv`, then `./sync.sh`.
 - **Add a new canonical vendored file:** add its name to `vendored-files.txt` (the
   single source shared by `sync.sh` and CI), then `./sync.sh`.
 - **Cut a release:** bump `VERSION`, `./sync.sh` (restamps every vendored copy),
@@ -153,6 +197,7 @@ make check            # ./sync.sh --check — vendored copies + generated allowl
 make audit            # ./audit.sh — scan the git index for baked secrets / private keys
 squid -k parse        # squid.conf syntax (only if you touched it; CI stages stub certs + allowlist)
 make test             # ./test/egress-smoke.sh — BOOTS the image, asserts the lock enforces (needs a runtime; HOST only)
+make native-launcher-test # real generic launcher fresh/warm/retry policy checks; requires generic test image
 bash .devcontainer/bin/doctor   # in-container readiness (proxy up, off-allowlist blocked, .devcontainer RO, no push token)
 ```
 
@@ -181,8 +226,10 @@ runs: `shell` (bash -n + shellcheck), `secrets` (audit.sh), `secrets-scan`
 |---|---|
 | `init-firewall.sh` | Canonical iptables egress lock (proxy-UID-only, default-deny) |
 | `squid.conf` | Canonical SNI-allowlist proxy (peek+splice, CONNECT-only) |
+| `clienthello-policy.py` | Canonical visible ClientHello validation helper |
+| `.devcontainer/agent-config.py` | Curated native imports and shared provider adapters |
 | `base-allowlist.txt` | Shared egress floor — widening here hits every container |
-| `launcher-common.sh` | Canonical host-side launcher helpers (staging, Keychain, traps, RO git mounts) |
+| `launcher-common.sh` | Canonical host-side launcher helpers (staging, traps, RO mount policy) |
 | `sync.sh` / `paths.sh` | Vendoring + allowlist generation · the managed-container list |
 | `audit.sh` | Secret/private-key leak scan over the git index |
 | `Makefile` | `setup` `sync` `check` `audit` `test` |
@@ -201,9 +248,9 @@ runs: `shell` (bash -n + shellcheck), `secrets` (audit.sh), `secrets-scan`
 LockBox's ordinary `.devcontainer` editing sandboxes only edit and test the worktree. They mount
 `.git` read-only, carry no push credential, and must not access the host SSH agent. Start the
 separate `git-agent` launcher on the host when the diff is ready; its narrow LockBox container
-reviews and stages explicit paths, creates the signed commit, and pushes. This repo **signs commits**
-(`commit.gpgsign=true`, `gpg.format=ssh`, Secure-Enclave `sk` key); default branch is `main` and
-`core.hooksPath=.githooks`. Write clear messages (what + why); update `README.md`,
+reviews and stages explicit paths, creates the signed commit, and pushes. Configure publication credentials and signing in the publication environment. No
+personal key or signing hardware is prescribed by this repository. The default branch
+is `main` and the recommended hook path is `.githooks`. Write clear messages (what + why); update `README.md`,
 `.devcontainer/README.md`, `CHANGELOG.md`, and this file when behavior changes; bump `VERSION`, run
 `./sync.sh`, and tag when releasing.
 
@@ -213,16 +260,3 @@ reviews and stages explicit paths, creates the signed commit, and pushes. This r
 guard exists) → ask the user rather than weaken an invariant. If a change would
 widen egress, add a capability, or relax a mount, surface it explicitly and let the
 user decide — do not route around it.
-
-## Cloud sessions
-
-Run `bash .codex/cloud/setup.sh` as the Codex cloud environment setup command. Cloud sessions may
-edit source and run portable static checks, but they cannot validate Apple Container runtime,
-Secure Enclave signing, host mounts, or macOS firewall behavior. Never report those host-only
-checks as passed from a cloud session. In cloud sessions, do not publish with shell Git commands,
-configure Git credentials, or create a pull request with `gh`. The platform-managed **Open pull
-request** action may create a pull request, and the connected GitHub integration may update the
-same branch for pull-request-linked follow-ups. When the user explicitly requests it, that
-integration may merge the pull request after all required checks and approvals pass and no blocking
-review remains. Do not use an admin bypass or directly update a default or protected branch outside
-that approved merge.

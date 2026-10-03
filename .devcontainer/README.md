@@ -13,7 +13,7 @@ box also vendored in this repo — this one is scoped to editing LockBox.)
 | Component            | Provenance                                                     |
 | -------------------- | ------------------------------------------------------------- |
 | GitHub CLI (`gh`)    | apt (cli.github.com)                                          |
-| Node.js 24           | Static build into `/usr/local` (runs `.claude/hooks/guard.mjs`) |
+| Node.js 24           | Static build into `/usr/local` (runs the baked Claude guard) |
 | Python 3.12          | python-build-standalone into `/opt/python` (Claude plugin hooks) |
 | `shellcheck`, `make` | apt / build-essential — lint + drive the repo's Makefile      |
 | Claude Code          | `npm i -g @anthropic-ai/claude-code` (baked, pinned)          |
@@ -36,15 +36,13 @@ no devcontainer CLI / Dev Containers extension; there is no `compose.yaml` and n
 
 The host entry points `.devcontainer/bin/claude` and `.devcontainer/bin/codex`
 select a provider and call the shared `.devcontainer/bin/agent` implementation.
-It forwards invocations into provider-specific containers that share one image. The
-Claude path stages a sanitized `~/.claude`; Codex uses a separate private volume.
-Both run an idempotent `container build`, then:
-
-- `container run` (reusing a running container, starting a stopped one, else
-  creating it), replays the post-create (once) / post-start (every start) lifecycle
-  as `dev`, and runs the same launch-integrity gate. The Claude path additionally
-  forwards its token from Keychain. Reuse fails with a rebuild instruction if the
-  container's saved provider does not match the selected entry point.
+It forwards invocations into provider-specific containers that share one image.
+Both providers import curated authored configuration once and keep native login
+and runtime state in separate private volumes. Both run an idempotent image build,
+then create, start or reuse the selected container, wait for the lifecycle barrier,
+prepare configuration, verify pins, and open the selected CLI. Reuse refuses a
+missing or mismatched provider or an older mount/configuration policy. There is no
+in-repo Keychain lookup. Piped input reaches either CLI without allocating a TTY.
 
 The fish function `lockbox-claude` (in `~/.config/fish/functions/`) walks up from
 `$PWD` to the repo (matching `.devcontainer/Dockerfile`), falls back to
@@ -61,7 +59,8 @@ For Codex, call the repository launcher directly or wrap it in a fish function:
 ```
 
 On first interactive use it starts `codex login --device-auth`. Complete the
-one-time code in a host browser. The resulting login cache stays in the native
+one-time code in a host browser. Claude uses native `claude auth login` and may
+ask you to paste a returned code. The resulting Codex login cache stays in the native
 `lockbox-codex` volume; host `~/.codex` is never mounted.
 
 To drop into a shell instead of an agent:
@@ -87,8 +86,6 @@ This is a development box, not a service host: the launcher publishes no ports a
 there is no `/etc/egress/inbound-ports` file. Egress is still forced through the
 in-container proxy; nothing listens for inbound host connections.
 
-Bound to `127.0.0.1` only; other devices on your LAN can't see them.
-
 ## Network policy
 
 Egress is enforced in two layers by the root entrypoint on every start:
@@ -96,9 +93,11 @@ Egress is enforced in two layers by the root entrypoint on every start:
 1. **In-container SNI proxy** (`squid`, peek+splice). All outbound
    HTTP(S) must traverse `squid` on `127.0.0.1:3128`. squid peeks the
    TLS SNI and _splices_ allowed hostnames (tunnels without decrypting —
-   end-to-end TLS preserved, no MITM) and terminates the rest. Enforcement
-   is by **hostname**, so it can't be bypassed by an exfil endpoint sharing
-   an allowed CDN IP, and it defeats `CONNECT`-host ≠ SNI domain-fronting.
+   end-to-end TLS preserved, no MITM) and terminates the rest. The visible
+   ClientHello helper rejects missing or malformed SNI and Encrypted ClientHello
+   (ECH), including GREASE; Squid's CONNECT-host fallback alone is insufficient.
+   The helper compares SNI with the CONNECT hostname. This equality check still
+   needs verification through a running Squid.
 2. **`iptables` egress lock** (`init-firewall.sh`): default-deny, then only
    the `proxy` UID may originate outbound packets; everything else must use the
    proxy or be dropped. IPv6 is default-deny; denied egress is
@@ -141,7 +140,8 @@ on top of the sandbox.
 Run `bash .devcontainer/bin/doctor` inside the box for a one-shot readiness check.
 
 **Not covered:** Claude's WebSearch/WebFetch run Anthropic-side, not through the
-proxy. ECH (encrypted SNI) destinations fail closed (no SNI → terminated).
+proxy. The visible ClientHello policy rejects ECH, including GREASE. Clients
+must disable it; the proxy does not decrypt the handshake.
 
 **Launch-integrity gate.** The image bakes `lockbox-verify-pins`, which records a
 SHA-256 of `node`, `npm`, `claude`, `codex`, `bwrap`, `gh`, `git`, and `python3` at build time. The
@@ -149,13 +149,12 @@ launcher runs it on every start and **aborts fail-closed** on fingerprint drift 
 if the checker is missing (a stale pre-pin image) — rebuild to re-pin
 (`LOCKBOX_REBUILD=1 lockbox-claude`).
 
-The separate generic `sandbox/.devcontainer/bin/dev` launcher caches a successful
-full check for the current running container boot. Its root-owned `/run` record is
-bound to the boot identifier, verifier, pin manifest, service identity, and clean
-`PATH`. A missing, stale, malformed, or writable record is a cache miss; the full
-absolute-path verifier then runs with startup hooks and pin overrides cleared.
-Verifier failure still aborts, while cache publication failure only loses the
-optimization for the next launch.
+Both in-repo launchers cache a successful full check for the current running
+container boot. The root-owned `/run` record is bound to the boot identifier,
+verifier, pin manifest, service identity, and clean `PATH`. A missing, stale,
+malformed, or writable record is a cache miss. The full absolute-path verifier
+then runs with startup hooks and pin overrides cleared. Missing verifiers and
+manifests fail closed. Cache publication failure only loses the optimization.
 
 **Isolation.** The container runs as the non-root `dev` user with **no sudo** and
 all setuid/setgid bits stripped image-wide. Caps: `--cap-drop ALL`, then re-add
@@ -165,156 +164,78 @@ iptables/perms-fix + squid privilege-drops). apple/container has **no
 **VM boundary** is the isolation control instead. The container is allocated 4 GB
 RAM and 4 CPUs (`-m 4g -c 4`), with `--tmpfs /tmp` and `--tmpfs /var/tmp`.
 
-**Prereqs / portability:** **macOS / apple-container only**. Claude's Keychain
-flow is macOS-specific; Codex uses device login inside its container. No git
-credential or ssh-agent is forwarded (see "Git" below), so `~/.ssh` and a
-`*-gh-token` are not needed.
+**Prerequisites and portability:** host launchers require macOS and Apple
+Container; every provider launch needs host Python 3.11
+or newer. Provider login uses the native CLI inside Linux. No Git credential or
+SSH agent is forwarded.
 
 ## Persistence
 
-| Source                                    | Container path                       | Type         | Holds                                                                                                                                                   |
-| ----------------------------------------- | ------------------------------------ | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `$PROJECT_ROOT` (host)                    | `/workspaces/LockBox`               | bind **RW**  | The LockBox repo — edits appear on the host immediately                                                                                                |
-| `$PROJECT_ROOT/.git` (host)               | `/workspaces/LockBox/.git`          | bind **RO**  | Git history is readable but immutable from inside (see "Git")                                                                                           |
-| `.devcontainer` (host)                    | `/workspaces/LockBox/.devcontainer` | bind **RO**  | Overlay on the rw workspace so the sandbox config + host launcher can't be rewritten from inside (see Safety note)                                      |
-| `lockbox-claude`                         | `/home/dev/.claude`                  | named volume | Container's writable Claude config — seeded from the sanitized stage on first create                                                                    |
-| `lockbox-codex`                          | `/home/dev/.codex`                   | named volume | Container-only Codex config and runtime login cache; host `~/.codex` is not mounted                                                                      |
-| `~/.claude-sandbox/stage/lockbox` (host) | `/home/dev/.claude-stage`            | bind **RO**  | Sanitized staging copy the launcher produces (secrets + `hooks`/`mcpServers`/`enabledPlugins` stripped). The raw host `~/.claude` is **never** mounted. |
-| (container fs)                            | `/home/dev/.claude.json`             | regular file | Container's writable global config, seeded from `…/claude.json` in the stage                                                                            |
+| Source | Container path | Mode | Purpose |
+|---|---|---|---|
+| Host LockBox checkout | `/workspaces/LockBox` | RW bind | Source edits appear on the host |
+| Host Git state and effective hook targets/aliases | Corresponding workspace paths | RO overlays | Prevent changes to host-executed Git paths |
+| Top-level and nested `.devcontainer` directories | Corresponding workspace paths | RO overlays | Protect sandbox definitions and launchers |
+| `lockbox-claude` | `/home/dev/.claude` | Private named volume | Claude settings, native global JSON, login and runtime state |
+| `lockbox-codex` | `/home/dev/.codex` | Private named volume | Codex settings and native login cache |
+| `~/.claude-sandbox/stage/lockbox-<provider>` | `/home/dev/.agent-stage-root` | RO bind | Curated authored snapshot, excluding host authentication |
+| Managed Claude guard and settings | Managed container paths | Baked root-owned files | Independent Claude tool guard |
 
-Both provider config paths use **native apple/container named volumes** — the root
-entrypoint can `chown` its mountpoint so a fresh volume inherits `dev` ownership.
-The Claude config is **not** live-shared (a raw bind corrupts `~/.claude.json`
-under concurrent writes and exposes host secrets): the container gets its own
-writable copy seeded from the sanitized stage, refreshed read-only on each start.
-No `gh`/git token is forwarded at all — git inside the container is read-only
-(see "Git").
+The entrypoint repairs native volume ownership. Host provider homes are never
+mounted. Recreating a container retains named volumes. No legacy global-file
+migration is needed; configuration, login state and memory remain private.
 
-## Syncing Claude config between host and container
+## Shared configuration and login
 
-The fish function `lockbox-claude-sync` propagates Claude config (settings,
-rules, plugins, agents, slash commands, hooks, MCP server definitions, session
-history) between your host `~/.claude` and the container's `~/.claude`.
+`LOCKBOX_CONFIG_SOURCE` defaults to `~/.config/lockbox/agents`. Shared `AGENTS.md`,
+`skills/` and explicit `mcp.json` declarations are adapted to native Claude and
+Codex files. Source `claude/` or `codex/` entries retain provider-specific settings,
+agents and plugin metadata. Selected native host entries are considered only with
+`LOCKBOX_CONFIG_IMPORT_NATIVE=1`. Host Claude
+`.claude.json` is never read. User hooks are stripped; managed guards remain
+root-owned in the image; a clean host needs no guard directory. Configuration retention does not prove Linux commands, plugin discovery
+or MCP endpoint access work.
 
-```sh
-lockbox-claude-sync pull     # refresh container from host (also auto-runs on launch)
-lockbox-claude-sync push     # propagate container changes back to host
-lockbox-claude-sync status   # show what differs
-```
-
-Both `pull` and `push` use `rsync --update` (per-file newer-wins) and a
-`jq` recursive merge for `.claude.json` (container values win on key
-conflict, so pulls add new host keys without clobbering container edits;
-pushes overwrite host values with container's). No deletes — files
-removed on one side stay on the other until manually cleaned up.
-
-### Auto-pull on container start
-
-The `lockbox-claude` launcher re-stages a sanitized copy of host
-`~/.claude` into `~/.claude-sandbox/stage/lockbox` on every invocation, and
-`post-start.sh` runs `rsync --update` from `/home/dev/.claude-stage` into
-`/home/dev/.claude` on every container start. So host-side config changes
-(new agents, edited rules) are picked up automatically. Note: `hooks`,
-`mcpServers`, and `enabledPlugins` are stripped during staging — re-add
-them inside the container if you want them active there.
-
-Pull-on-start is safe under concurrency: it only reads from the stage, so
-there's no write race against a host-side claude session.
-
-### Push on session exit (automatic)
-
-The reverse (container → host) runs automatically. The `lockbox-claude`
-launcher stays the parent process and, on **session exit** (normal or Ctrl-C),
-pushes the container's config back against the exact container it launched. So if
-Claude inside the container modifies its own config — adds an agent, edits a rule,
-registers an MCP, writes a memory — those changes land back on the host with no
-manual step. Pushing only after the session ends keeps a single writer, so it can't
-race a live host-side claude on `~/.claude.json`. Disable per session with
-`LOCKBOX_AUTOSYNC=0`; `lockbox-claude-sync push` remains the manual fallback (e.g.
-after a crash, or to retry a failed auto-push).
-
-Repo-level config (`CLAUDE.md`, `.claude/skills/`, `.claude/agents/`) lives in the
-mounted workspace and needs **no** sync.
-
-**Files excluded from sync** (volatile runtime state, not portable):
-`.credentials.json`, `backups/`, `cache/`, `paste-cache/`, `daemon.log`,
-`debug/`, `telemetry/`, `session-env/`, `shell-snapshots/`.
-
-## Codex / ChatGPT authentication
-
-Codex uses the official headless device-code flow because the browser callback
-originates inside the container. The launcher checks `codex login status`; if no
-cache exists, it runs `codex login --device-auth` in an interactive terminal.
-Alternatively, set `OPENAI_API_KEY` or enterprise `CODEX_ACCESS_TOKEN` for the
-first launch. The launcher pipes it to the matching `codex login` command without
-printing it. Codex stores the resulting runtime cache in its private named volume.
-
-This differs from Claude's process-only token forwarding. Codex refreshes ChatGPT
-sessions through its local auth cache. The cache is not baked, copied to the
-workspace, or mounted from the host, but a compromised Codex session can read its
-own credential. Revoke the session if compromise is suspected.
-
-## Claude auth — threat-model conscious version
-
-Your host Claude credentials live in the macOS Keychain (encrypted,
-ACL-protected, prompts on access). The in-container browser login is
-broken upstream (redirect URI gets double-encoded as
-`oauth%2Fcode/callback` and the OAuth provider rejects it). To avoid
-writing any long-lived credential to a plaintext file on disk, we
-store the container's token in Keychain too, and the launcher retrieves
-it at exec time and forwards it as an env var to the container —
-credentials only ever land in Keychain or in container process memory,
-never in a file.
-
-**One-time setup, on the host:**
+First import preserves private existing values. Ordinary launches reuse private
+configuration. After changing authored input, refresh deliberately:
 
 ```sh
-# 1) Generate a long-lived OAuth token (uses your existing subscription).
-claude setup-token
-# → prints a token starting with sk-ant-…   copy it
-
-# 2) Store it in Keychain under a service name the launcher looks for.
-security add-generic-password \
-  -s "lockbox-claude-code-token" \
-  -a "$USER" \
-  -w   # prompts you to paste the token (won't echo)
+LOCKBOX_CONFIG_REFRESH=1 .devcontainer/bin/claude
+LOCKBOX_CONFIG_REFRESH=1 .devcontainer/bin/codex
 ```
 
-That's it. The `lockbox-claude` launcher now does
-`security find-generic-password -s lockbox-claude-code-token -w` on
-every invocation and forwards the result to the container via
-`container exec -e CLAUDE_CODE_OAUTH_TOKEN=…`. No plaintext
-file, no fish universal var, no `.credentials.json` in `~/.claude`.
+Refresh backs up replaced files under the provider's private
+`.lockbox-config-backup-*` directory. Present settings take authored values; each
+MCP server is replaced atomically. Retired imported entries are removed only when
+unchanged from their ownership record. Local edits and private entries survive.
+Credentials, history, sessions and
+memory are excluded. There is no configuration export or host-memory copy-back.
+Startup uses a host profile lock and aborts if proxy readiness times out. The lock
+releases before login or an interactive session. Imports also use a private-volume
+lock. Identical refreshes avoid writes, and five completed importer-owned backups
+are retained. An interrupted import or incomplete rollback blocks startup pending
+private recovery; see [provider configuration](../docs/provider-configuration.md).
+Close other sessions before refreshing.
 
-**The Keychain "Always Allow" decision.** The first time `security`
-reads this entry, macOS will pop the standard Keychain prompt. Your
-choices:
+Claude uses `CLAUDE_CONFIG_DIR=/home/dev/.claude`, native `claude auth login`, and
+optional explicit `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` authentication.
+Codex uses `CODEX_HOME=/home/dev/.codex`, file credential storage, native device
+login, and optional `OPENAI_API_KEY` or enterprise `CODEX_ACCESS_TOKEN` bootstrap.
+A noninteractive first launch needs an existing private login or supported
+environment authentication. The launchers do not read Keychain or host auth caches.
 
-- **Allow** → token released to this invocation only; you'll see the
-  prompt again next time. Highest friction, lowest risk: any other
-  process trying to grab the token has to either trigger a visible
-  prompt or impersonate `security` plausibly enough to fool you.
-- **Always Allow** → grants the `security` binary blanket access. No
-  more prompts, but any process running as your user can shell out to
-  `security` and get the token without you noticing. Convenience at the
-  cost of one of the layers Keychain was buying you.
+Both pinned CLIs read project `AGENTS.md`. Claude's builtin is enabled to read it
+alongside Claude instruction files. Shared global instructions become a private
+native Claude `CLAUDE.md` adapter. Project skills and provider-specific instructions
+remain governed by each CLI's discovery rules. Read
+[provider configuration](../docs/provider-configuration.md) for exact authored
+entries, precedence, safe link handling, MCP schema and native feature limits.
 
-For a host-compromise threat model, **Allow each time is the more
-defensible choice.** If you later get tired of clicking, change your
-mind via Keychain Access.app → find the entry → Access Control → swap.
-
-**Rotating.** When you want to invalidate the token:
-
-```sh
-security delete-generic-password -s "lockbox-claude-code-token"
-# then re-run the two-step setup above with a fresh `claude setup-token`
-```
-
-**Fallback paths (still supported by the launcher).** If you'd rather
-skip the Keychain dance, the launcher also picks up
-`CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_API_KEY`, or `ANTHROPIC_AUTH_TOKEN`
-straight from your shell env. Worse posture (plaintext in
-`~/.config/fish/fish_variables`), but functional.
+Runtime validation is still required: rebuild each affected image, run its doctor,
+exercise real first-login flows and native skill/plugin/MCP discovery, and run the
+booted egress test. The generated firewall installs the root-owned ClientHello
+companion before its readiness sentinel. Deployment requires successful fleet sync and rebuilds.
+Portable checks do not establish those runtime results.
 
 ## Git (read-only inside; publication through git-agent)
 
@@ -335,28 +256,16 @@ bind mount immediately), then leave this editing session and invoke the host-sid
 launcher. Its separate narrow container reviews, stages, signs, commits, and pushes the handed-off
 diff. There is no Git authentication to set up in this editing container.
 
-## Project memory
+## Private memory and limitations
 
-The host's per-project Claude memory is bind-mounted **read-only** at
-`~/.claude-memory-seed` and mirrored (`rsync --delete`) into the container's
-per-project memory path on every start, so the box always reads current host
-memory and anything a prior headless / prompt-injected run wrote is wiped. On exit
-from an **interactive** session, the launcher pushes that session's new memory
-edits (layered on the clean seed) back to the host.
+Provider memory stays in the private container volume. It is not seeded from or
+copied back to the host. The workspace remains writable, so intentionally authored
+repository instructions can still be edited through the normal worktree.
 
-## Known limitations
-
-- **Electron desktop build (`npm run dist`)** — needs macOS native tools;
-  run on the host, not in this container.
-- **Live LAN polling** — unreachable; only the proxy's allowlisted
-  hostnames resolve, and LAN hosts aren't allowlisted. App `fetch` _does_
-  route through the proxy (`NODE_USE_ENV_PROXY=1`), so calls to allowlisted
-  hosts work — LAN just isn't one of them. The devcontainer is for code editing.
-- **Changing the egress allowlist** — edit `allowlist.extra.txt`, re-run
-  `LockBox/sync.sh`, and rebuild (it's baked into the image, not read
-  from the workspace).
-- **Host Ollama** — blocked; add the host's address to the allowlist and rebuild
-  if you want it through.
+Host-specific tools and hardware are unavailable inside Linux. Direct LAN access
+is denied by the egress policy. Changing the baked allowlist requires sync and a
+rebuild. Unsupported Git include, symlink and hardlink layouts fail at launch;
+use a supported checkout rather than weakening the mount policy.
 
 ## Safety note
 
@@ -366,18 +275,15 @@ credential, to an allowlisted host. Treat this as _"the host is isolated from th
 agent,"_ not _"the agent is isolated from a hostile repo."_ Use bypass-permission
 flags only for trusted repositories.
 
-**Why `.devcontainer` is mounted read-only.** The repo is bind-mounted
-read-write at `/workspaces/LockBox` so the agent can edit source — but that
-same mount would otherwise expose the sandbox's own definition
-(`Dockerfile`, the launcher run args) and the **host-side launcher**
-(`bin/agent`, `bin/claude`, `bin/codex`, `bin/doctor`), which run on your **Mac** with your shell and
-Keychain. A compromised in-container agent could edit a launcher or the
-`Dockerfile`, and the next invocation (which calls `container build`
-and re-execs the launcher) would run it on the host — a trivial full escape.
-To close that, `.devcontainer` is re-mounted **read-only on top of** the
-read-write workspace, so it is immutable from inside. The container cannot lift
-this: it has `--cap-drop ALL` (no `CAP_SYS_ADMIN`, so no remount/unmount), and
-`.devcontainer` is a busy mountpoint that can't be replaced — the protection
-re-applies on every `container run`. `bin/doctor` proves it live by attempting a
-write (a stale container booted before the change would be caught). **Edit
-`.devcontainer` on the host only,** then rebuild.
+**Why sandbox definitions and Git hooks are read-only.** Source is writable so
+an agent can implement changes. Host launchers, Dockerfiles and Git hooks can
+execute on the Mac during a later launch or publication. The launcher overlays
+all discovered top-level and nested `.devcontainer` directories, Git state,
+effective hooks targets and aliases read-only. Unsupported linked and Git include
+layouts are refused, and a saved policy fingerprint blocks stale reuse. The
+container has no `CAP_SYS_ADMIN`, so it cannot remove these overlays. Edit sandbox
+definitions on the host and rebuild. Verify the real mounts with the doctor before
+relying on a new policy; a portable fixture is not a live mount check.
+
+Build, install and release scripts elsewhere in the writable workspace remain
+editable. Review their diff before running them on the host.

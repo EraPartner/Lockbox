@@ -8,18 +8,134 @@ every vendored copy, so a baked container self-identifies its egress-lock genera
 
 ## [Unreleased]
 
+### Changed — portable deployment configuration
+
+- Removed personal dotfiles-generated cloud agreements and their CI checker.
+  Cloud setup no longer overwrites global Codex instructions or shell startup files.
+
+- Fresh clones manage only the two in-repository sandboxes. External target paths
+  and optional stable labels now live in ignored `paths.local.tsv` data, with a
+  portable example and `EGRESS_FLEET_FILE` override. Missing targets still fail;
+  CI ignores local deployment data. Active guidance no longer prescribes personal
+  checkout names or signing hardware.
+
+### Changed — shared provider configuration and native login
+
+- The authored common source is the default. `LOCKBOX_CONFIG_IMPORT_NATIVE=1`
+  explicitly opts into selected native host entries; the default has no host
+  instruction fallback. Every provider launch requires host Python 3.11 or newer.
+- Refresh tracks imported ownership, removes retired unchanged entries, preserves
+  private edits, replaces each MCP definition atomically, and rolls back deletions
+  and readiness metadata on failure. Host and private-volume locks reject
+  overlapping imports. Launch reports distinguish configuration presence from
+  native discovery and connection.
+- Both images bake a reviewed root-owned Claude guard and managed policy, and
+  reject stale policy at launch. The guard is a canonical vendored JavaScript
+  file. A clean host needs neither a Claude guard directory nor a Git config file.
+- Both in-repo providers use official login in private native volumes: Claude
+  `auth login` and Codex device login. Explicit environment authentication remains
+  available. In-repo launchers no longer fetch Claude tokens from Keychain, import
+  host auth caches, migrate legacy container global state, or copy host memory back.
+- `LOCKBOX_CONFIG_SOURCE` defaults to `~/.config/lockbox/agents`. Shared instructions,
+  skills and explicit MCP declarations are rendered into native adapters alongside
+  an exact allowlist of authored native entries. Host Claude global `.claude.json`
+  is never read. Imported user hooks are stripped; plugin metadata remains subject
+  to Linux command, discovery and egress availability. MCP environment forwarding
+  trusts the read-only host snapshot, not private agent-writable settings, and
+  refuses Git push credential variables. The importer is in the protected
+  `.devcontainer` launcher tree.
+- Initialization preserves private values; explicit `LOCKBOX_CONFIG_REFRESH=1` or
+  `DEV_SANDBOX_CONFIG_REFRESH=1` applies present authored files with rollback backups.
+  Private credentials, history, sessions and memory are excluded. Safe links within
+  curated roots are materialized; broken, escaping or private links are refused.
+  Every provider launch requires host Python 3.11 or newer.
+- Both pinned CLIs use project `AGENTS.md`. Claude's builtin instruction option reads
+  it alongside Claude instruction files; common global guidance is rendered as a
+  private native `CLAUDE.md`. Codex keeps `CODEX_HOME` and file credential storage.
+- Removed fleet fish configuration export commands and host export traps. Cleanup
+  only stops containers; sibling launch-time staging remains separate.
+
+### Fixed — launcher and proxy policy checks
+
+- Generic allowlist changes now restart the container before policy confirmation;
+  desired bytes cannot stand in for applied policy after a failed transition.
+  Confirmation includes the container generation and mounted policy hash. Both
+  launchers serialize startup and fail if proxy readiness times out.
+- Writable workspaces cannot overlap private host staging. Readiness skips private
+  login profiles. Generic authored input uses a separate sibling mount source:
+  Apple Container omitted the original directory mount when its child policy
+  files were mounted separately, blocking first imports. Stale layouts require
+  recreation, while private profiles survive. Missing host snapshots are restored
+  without refreshing initialized private configuration.
+- Configuration rollback records only successful mutations, continues restoration
+  after individual errors, and blocks startup after an interrupted or incomplete
+  rollback. Path rewriting respects full path boundaries. Unchanged imported
+  plugins may transition between files and directories. Identical refreshes avoid
+  writes; completed importer-owned backups are bounded to five, while failed and
+  unrecognized backups remain available. Import errors do not expose authored values.
+- Generic doctor checks now reject unreachable provider endpoints, direct egress
+  and Git push credentials. Startup guidance directs publication to git-agent.
+  The host Claude fish wrapper now selects Claude explicitly. Retired fish export
+  shims, five old export snapshots and the obsolete host export lock were removed.
+- Booted fixtures now use the actual CLIs to check shared skills, local MCP
+  connections, global guidance and project `AGENTS.md`, plus an imported Claude
+  plugin enabled with its native directory option. Simulated local model endpoints
+  avoid real account credentials and API requests. Managed policy ownership and
+  content are verified inside both images.
+- Native settings adaptation applies only to root CLI configuration files, so
+  nested plugin configuration keeps its own schema and private edits.
+- Proxy log rotation and graceful stop signal Squid as its owning UID.
+  The disabled PID file makes `squid -k` unusable, and the root capability set
+  does not include `CAP_KILL`. Generic allowlist changes require a fresh start.
+  Cleanup is installed before container reuse checks, so a failed transition also
+  stops the selected container under the normal stop-on-exit policy.
+- Both in-repo launchers forward piped standard input and enforce the same strict
+  cached pin gate. Missing verifiers or manifests fail closed.
+- Safe Chain startup hooks are supplied only to dev processes, so root startup
+  cannot execute an agent-writable hook left by an earlier session. Nested plugin
+  MCP/settings imports reject inline credentials before snapshot publication.
+- Read-only overlays protect nested `.devcontainer` directories and effective Git
+  hooks paths and their aliases. Unsupported symlink, hardlink and Git include
+  layouts and nested Git repositories are refused. Container reuse checks a mount/configuration fingerprint;
+  policy changes require recreation while private named volumes remain intact.
+- Squid requires a positive visible ClientHello helper result before splicing.
+  Missing or malformed SNI and ECH, including GREASE, are rejected without TLS
+  decryption. The booted egress fixture checks CONNECT/SNI equality through a
+  running Squid with different allowlisted names. Deployment also requires native
+  feature discovery and real first-login checks.
+- The generated firewall embeds and installs the canonical ClientHello companion
+  as a root-owned executable before publishing the readiness sentinel. Existing
+  fleet Dockerfile firewall COPY integration is sufficient. Deployment requires
+  successful fleet sync, affected image rebuilds and runtime verification.
+
+### Fixed — Claude readiness
+- Both in-repo images extract Python without preserving archive ownership and
+  remove group/other write permissions from its tree. The cached integrity gate
+  requires root-owned, non-writable binary ancestry; preserving release-archive
+  ownership made the generic sandbox's Python fail that check despite a matching
+  fingerprint. Smoke tests now show the verifier's diagnostic instead of hiding it.
+- LockBox's doctor now requires a real HTTP status from the provider endpoint;
+  failed curl requests no longer appear reachable.
+- LockBox installs shutdown cleanup before provider, lifecycle, and integrity
+  checks. Early failures stop the container by default without syncing config
+  back to the host.
+- The generic sandbox allows Safe Chain's malware and package-age feeds through
+  `malware-list.aikido.dev` in its own overlay.
+- Provider setup documentation describes curated native imports, shared MCP
+  declarations, private login and configuration, and feature availability limits.
+
 ### Changed — sandbox launch path
-- The generic sandbox caches a successful binary-pin verification for one running
+- Both in-repo sandboxes cache a successful binary-pin verification for one running
   container boot in a root-owned `/run` record. Cache hits remain bound to the
   verifier, manifest, service identity, and clean execution environment; cold,
   stale, or insecure states still run the full checker and fail closed.
-- Claude staging membership now lives in the vendored
-  `claude-stage-items.txt`; both the Bash launcher and dotfiles fish sync read and
-  validate that file instead of maintaining separate hardcoded lists.
+- Sibling Claude staging membership lives in the vendored
+  `claude-stage-items.txt`; sibling helpers validate that manifest. The in-repo
+  providers use the shared curated importer instead.
 
 ### Changed — TODO review
-- Claude credential forwarding now returns as soon as a Keychain token is added, instead of
-  rescanning the launch environment to rediscover the flag it just appended.
+- Sibling Claude credential forwarding returns as soon as a Keychain token is added,
+  instead of rescanning the launch environment to rediscover the appended flag.
 - Git-backed sibling workflows now compare their vendored `.devcontainer` files and generated
   allowlist with LockBox's public canonical `main` branch. Brain is treated as a second VaultLens
   checkout so its generated allowlist uses the same stable repository label.
