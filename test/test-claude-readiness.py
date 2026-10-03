@@ -191,6 +191,10 @@ if "sha256sum" in args:
 if "--managed-settings" in args:
     finish("managed-settings", output="{}")
 if "python3" in args and "-c" in args:
+    # The real managed-policy validator reads piped JSON. Drain the fixture's
+    # input too, so its producer cannot race an early close and fail with SIGPIPE.
+    if "-i" in args:
+        sys.stdin.read()
     finish("managed-policy", 21 if gate == "managed-policy" else 0)
 if last == "SANDBOX_AGENT":
     finish("provider", output="stale" if gate == "provider" else provider)
