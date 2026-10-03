@@ -342,6 +342,13 @@ def mcp_adapters(declarations):
 
 
 def stage(provider, destination, source, home, import_native=False):
+    if not source.is_dir():
+        print(
+            "launcher: authored configuration source is missing or not a directory; "
+            "shared instructions, skills and MCP declarations will not be imported. "
+            "Populate LOCKBOX_CONFIG_SOURCE and explicitly refresh existing profiles.",
+            file=sys.stderr,
+        )
     native = home / (".claude" if provider == "claude" else ".codex")
     shared_skills = home / ".agents/skills"
     inputs = (source, native, shared_skills) if import_native else (source,)

@@ -45,7 +45,12 @@ configuration can remain in its curated `config.toml`. Native options remain
 provider-specific: shared input does not translate permission rules, subagent
 semantics, plugins or every provider feature.
 
-Host Python 3.11 or newer is required on every launch. The importer
+Host Python 3.11 or newer and Node.js 18 or newer are required on every launch. A
+missing authored source produces a warning; it does not enable native import or
+copy host state. Populate the source and explicitly refresh an existing profile to
+import shared instructions, skills and MCP declarations. Codex agents and native MCP
+settings need deliberate adaptation for Claude; they are not translated automatically.
+The importer
 materializes symlinks only when their resolved targets stay within curated roots.
 It refuses broken links, cycles, private paths and escapes. A shared skill linked
 to a separate checkout outside those roots must be copied into an authored root.
@@ -53,8 +58,12 @@ Credentials, `.env` files, local settings, sessions, history, projects and memor
 are excluded. Imported settings remove user hooks and host trust/account metadata;
 inline credential/environment fields are rejected. Plugin metadata is retained,
 but host paths and macOS tools may not work in Linux. Both images bake the
-root-owned Claude guard and managed settings. No host guard directory is required;
-launch rejects a missing or stale baked policy and requires a rebuild.
+root-owned shared command guard, post-edit monitor, bounded formatter, exact-root
+policy and managed settings. Claude uses `/etc/claude-code/managed-settings.json`;
+Codex uses `/etc/codex/requirements.toml` to enable the same managed pre-tool and
+post-edit hooks. Both registrations are root-owned and readable by `dev`. The launcher streams the reviewed host verifier and
+checks every dependency against current source before lifecycle or credentials.
+No host guard directory is required; missing, writable or stale policy requires a rebuild.
 
 ## Initialization and explicit refresh
 
@@ -225,7 +234,9 @@ profile cannot skip the trusted proxy check.
 `IMAGE_KIND=lockbox make test` selects the scoped image. The native feature fixture
 uses fresh profiles, a local MCP server and simulated model endpoints. Both CLIs
 must discover the imported shared skill, connect MCP and load shared global guidance
-plus project `AGENTS.md`. Claude also loads an imported local plugin through
+plus root and nested project `AGENTS.md`. Both CLIs must activate the managed
+command denial and post-edit monitor using actual tools against the local mock API.
+Claude also loads an imported local plugin through
 `--plugin-dir`; this does not certify arbitrary marketplace metadata or plugins.
 The fixture never uses an account credential or a live model response. Claude's
 baked managed policy must match the guard and remain unwritable by `dev`.

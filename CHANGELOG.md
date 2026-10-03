@@ -8,6 +8,56 @@ every vendored copy, so a baked container self-identifies its egress-lock genera
 
 ## [Unreleased]
 
+### Fixed — Claude migration health checks
+
+- Host launchers check the required Node.js 18 or newer before staging or builds;
+  documented prerequisites now include this policy-generation dependency.
+- Missing authored configuration sources produce a warning without enabling native
+  imports. Existing private profiles still require deliberate refresh.
+- Command checks catch downloaded scripts passed into intermediate pipeline stages
+  and recursive removal prefixed with unrelated Git text. Reads of the exact reviewed
+  LockBox pin manifest remain available without allowing unrelated environment files.
+- Post-edit monitoring uses reviewed roots, including launches from subdirectories,
+  and tracks shared and local permission settings separately. Rust formatting writes
+  only the requested file and does not traverse child modules.
+- CI now runs image identity, bundle integrity, host prerequisites, post-edit behavior
+  and single-file formatter regression suites alongside the existing checks.
+
+### Changed — shared Claude security policy
+
+- Claude now uses the reviewed shared strict command guard and post-edit monitor.
+  Images bake the guard, monitor, formatter, exact-root policy, installer and verifier.
+  Launchers stream the host verifier and reject stale or writable dependencies before
+  lifecycle scripts and credentials; host hook mounts are no longer required.
+- Generic image variants retain approved project formatting and permission-monitor
+  choices. Unknown roots and the publication profile opt out of automatic formatting.
+- Local mock API fixtures exercise actual Claude Bash denial, Write monitoring,
+  instruction loading, shared skill discovery, plugin activation and MCP connection.
+
+### Changed — Claude migration defaults
+
+- Bare editing `agent` and generic `dev` dispatchers now select Claude when no
+  provider override is set. Explicit Claude/Codex adapters and environment
+  selections retain their behavior; invalid provider names still fail.
+- Portable readiness fixtures verify the default without accessing native login
+  state or starting a real container.
+
+### Fixed — image and mount policy on container reuse
+
+- Shared launch policy now includes the inspected image descriptor and requires
+  an OCI SHA-256 digest. Missing, malformed or changed descriptors prevent stale
+  container reuse; private named volumes remain intact on explicit recreation.
+- Downstream editing launchers use the shared nested read-only mount planner and
+  reject obsolete creation policies before starting stopped containers or running
+  lifecycle scripts. Host metadata must confirm the actual image digest. Cleanup
+  covers selected containers while failed host preflight preserves existing sessions.
+  Piped input is preserved, and Safe Chain startup runs only as the dev user.
+- The publication launcher retains its separate Git boundary and adds image policy
+  verification. The Brain adapter includes its scoped and external mounts and no
+  longer calls the removed host configuration export helper.
+- Added image identity fixtures. Runtime image inspection, recreation and egress
+  enforcement still require checks on a host with Apple Container access.
+
 ### Changed — dependency maintenance and contributor guidance
 
 - Updated the generic sandbox's pinned Debian base digest and the pinned checkout,

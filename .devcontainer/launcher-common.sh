@@ -17,8 +17,8 @@
 #   Produces  $HOME/.claude-sandbox/stage/<profile>/dot-claude/   (config tree)
 #   and       $HOME/.claude-sandbox/stage/<profile>/claude.json   (.claude.json)
 # Copies only the safe, declarative config; rewrites host plugin paths to the
-# container path; strips hooks from the staged settings (the PreToolUse guard
-# reaches the box out-of-band via the root-owned managed-settings.json bind).
+# container path; strips hooks from staged settings. The reviewed command guard,
+# post-edit monitor and managed settings are baked into the root-owned image.
 sandbox_stage_claude_config() {
   local profile="$1"
   local src dst item jf f items_file item_count
@@ -181,6 +181,27 @@ sandbox_forward_llm_creds() {
 # then fall back to the official interactive device-code flow. Keeping this here
 # prevents the security-sensitive credential plumbing from drifting between the
 # LockBox and generic sandboxes.
+sandbox_require_host_node() {
+  if ! command -v node >/dev/null 2>&1 || ! node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 18 ? 0 : 1)' >/dev/null 2>&1; then
+    echo 'launcher: managed policy requires host Node.js 18 or newer; install it before launching either provider.' >&2
+    return 1
+  fi
+}
+
+sandbox_require_claude_policy() {
+  local cid="$1" user="$2" dc="$3" profile="$4" root="$5"
+  local hashes watcher verifier installer identity
+  hashes="$(shasum -a 256 "$dc/claude-guard.mjs" "$dc/claude-post-edit.mjs" "$dc/claude-explicit-format.sh" | cut -d ' ' -f1)" || return 1
+  watcher="$(node "$dc/claude-guard.mjs" --watcher-policy "$profile" "$root" | shasum -a 256 | cut -d ' ' -f1)" || return 1
+  verifier="$(shasum -a 256 "$dc/claude-policy-verify.sh" | cut -d ' ' -f1)" || return 1
+  installer="$(shasum -a 256 "$dc/claude-policy-install.sh" | cut -d ' ' -f1)" || return 1
+  identity="$(printf '%s\n' "$hashes" "$watcher" "$verifier" "$installer" | shasum -a 256 | cut -d ' ' -f1)" || return 1
+  # Stream the current trusted verifier instead of executing an image-supplied checker.
+  container exec -i --user "$user" -e BASH_ENV= \
+    -e PATH=/usr/local/share/npm-global/bin:/opt/python/bin:/usr/local/bin:/usr/bin:/bin \
+    "$cid" /bin/bash --noprofile --norc -s -- "$identity" < "$dc/claude-policy-verify.sh"
+}
+
 sandbox_ensure_codex_login() {
   local container_user="$1" container_name="$2" label="$3" hint="$4"
 
@@ -640,6 +661,68 @@ sandbox_ro_mount_policy_id() {
   RO_MOUNT_POLICY_ID="$digest"
 }
 
-# ─── vendored by LockBox v0.1.0 · canonical sha256:7c9f7201b2b428def172f5d645cf54147ca35f0c6987112e532139b196d1238c ───
+# --- Bind launch policy to the inspected image descriptor --------------------
+# Hash canonical JSON, so formatting/key order changes cannot manufacture drift.
+# No fallback to the image tag: tags are mutable and cannot prove fresh policy.
+sandbox_image_policy_id() {
+  local image="$1" descriptor digest
+  descriptor="$(container image inspect "$image")" || {
+    echo "launcher: cannot inspect image '$image'; refusing stale-image reuse." >&2
+    return 1
+  }
+  # Apple Container 1.0.0 ImageResource JSON exposes the index digest here.
+  # shellcheck disable=SC2034
+  IMAGE_DIGEST="$(printf '%s\n' "$descriptor" | jq -esr '
+    if length == 1 and (.[0] | type == "array" and length == 1)
+    then .[0][0].configuration.descriptor.digest else empty end |
+    select(type == "string" and test("^sha256:[0-9a-f]{64}$"))')" || {
+    echo "launcher: image descriptor has no unique OCI index digest; refusing reuse." >&2
+    return 1
+  }
+  digest="$(set -o pipefail
+    printf '%s\n' "$descriptor" |
+      jq -ceS 'select(type == "array" or type == "object") | select(length > 0) | select(any(.. | strings; test("^sha256:[0-9a-f]{64}$")))' |
+      shasum -a 256
+  )" || {
+    echo "launcher: invalid image descriptor; refusing stale-image reuse." >&2
+    return 1
+  }
+  digest="${digest%% *}"
+  [[ ${#digest} == 64 && "$digest" != *[!0-9a-f]* ]] || return 1
+  # Consumed by creation-time SANDBOX_LAUNCH_POLICY and the reuse gate.
+  # shellcheck disable=SC2034
+  IMAGE_POLICY_ID="$digest"
+}
+
+# Validate creation-time policy without executing inside the container. This must
+# run before starting a stopped VM: legacy images may have unsafe startup hooks.
+# Schema: Apple Container 1.0.0 ContainerConfiguration and ProcessConfiguration.
+sandbox_require_container_policy() {
+  local name="$1" agent="$2" policy="$3" metadata
+  [[ "${IMAGE_DIGEST:-}" =~ ^sha256:[0-9a-f]{64}$ && -n "$agent" && -n "$policy" ]] || {
+    echo "launcher: missing expected image/provider/policy identity." >&2; return 1;
+  }
+  metadata="$(container inspect "$name")" || {
+    echo "launcher: cannot inspect container '$name'; refusing reuse." >&2
+    return 1
+  }
+  if ! printf '%s\n' "$metadata" | jq -es \
+      --arg name "$name" --arg agent "$agent" --arg policy "$policy" \
+      --arg digest "${IMAGE_DIGEST:-}" '
+    length == 1 and (.[0] |
+    type == "array" and length == 1 and
+    .[0].configuration.id == $name and
+    .[0].configuration.image.descriptor.digest == $digest and
+    (.[0].configuration.initProcess.environment |
+      type == "array" and all(.[]; type == "string") and
+      ([.[] | select(startswith("SANDBOX_AGENT="))] == ["SANDBOX_AGENT=" + $agent]) and
+      ([.[] | select(startswith("SANDBOX_LAUNCH_POLICY="))] == ["SANDBOX_LAUNCH_POLICY=" + $policy])))
+    ' >/dev/null 2>&1; then
+    echo "launcher: stale or malformed container provider/image/mount policy; recreate '$name'." >&2
+    return 1
+  fi
+}
+
+# ─── vendored by LockBox v0.1.0 · canonical sha256:92b4408c19cc27f9a12a8486e33adc985663dfbb9be82511b71094a1a30ac000 ───
 # Generated from the canonical source by LockBox/sync.sh — DO NOT EDIT HERE.
 # Edit LockBox/launcher-common.sh and re-run ./sync.sh.

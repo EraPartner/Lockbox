@@ -78,7 +78,9 @@ container system start
 Docker can run the egress smoke test in continuous integration, but it is not the
 primary host runtime. The repository itself is Bash and container infrastructure; it
 has no application build step or root `package.json`. Every provider launch
-requires host Python 3.11 or newer.
+requires host Python 3.11 or newer and Node.js 18 or newer. The launchers check
+Node.js before staging configuration or building an image; it generates the reviewed
+policy identity for both providers. The image retains its separately pinned Node.js.
 
 ## Quick start
 
@@ -111,16 +113,21 @@ cd /path/to/project
 /path/to/LockBox/sandbox/.devcontainer/bin/dev-codex
 ```
 
-The provider-neutral entry point is also available when selection must come from the
-environment:
+The shared `bin/dev` entry point defaults to Claude. An explicit environment value
+selects the provider:
 
 ```sh
 DEV_SANDBOX_AGENT=codex /path/to/LockBox/sandbox/.devcontainer/bin/dev
 ```
 
 Each provider uses a separate container and native configuration volume. A launcher
-refuses to reuse a container created for a different provider or an older mount and
-configuration policy. Recreate it with `LOCKBOX_REBUILD=1` or
+refuses to reuse a container created for a different provider, inspected image,
+mount or configuration policy. Image inspection must include an OCI SHA-256 digest;
+missing or malformed descriptors fail the launch. The full descriptor is hashed
+conservatively, so metadata changes can also require recreation. Existing containers
+are inspected on the host before they start, including their actual image digest.
+Cleanup applies only after the launcher selects a validated container or begins
+creation. Recreate with `LOCKBOX_REBUILD=1` or
 `DEV_SANDBOX_REBUILD=1`; named volumes retain private configuration and login state.
 
 ## Canonical and generated files
@@ -233,8 +240,13 @@ global instructions become a native Claude `CLAUDE.md` adapter inside its volume
 Host Claude global `.claude.json` is never read: shared Model Context Protocol (MCP)
 servers must be declared explicitly. User hooks are stripped from imported settings;
 plugin metadata is retained, but Linux commands, plugin discovery and endpoint access
-still need verification. Both images bake a root-owned Claude guard and managed
-settings, so a clean host needs no Claude guard installation. Read [provider configuration](docs/provider-configuration.md)
+still need verification. Both images bake the shared command guard, post-edit monitor,
+bounded formatter, exact project policy and managed settings as root-owned files.
+The host streams a reviewed checker into the container and verifies every dependency
+against current source before lifecycle scripts or credentials. A clean host needs no
+Claude hook directory. Generic launches retain known project opt-ins and opt out for
+unknown roots; publication launches disable automatic formatting.
+Read [provider configuration](docs/provider-configuration.md)
 for exact import entries, precedence, MCP declarations and login limits.
 
 A running agent can access its own credential. Revoke it if the sandbox is suspected

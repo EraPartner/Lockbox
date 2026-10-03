@@ -140,6 +140,10 @@ jobs:
         run: python3 test/test-sync.py
       - name: Claude readiness regressions
         run: python3 test/test-claude-readiness.py
+      - name: Image identity regressions
+        run: python3 test/test-image-policy.py
+      - name: Host prerequisites
+        run: python3 test/test-host-prerequisites.py
       - name: Shared doctor decisions
         run: python3 test/test-doctor.py
       - name: Startup serialization
@@ -150,6 +154,12 @@ jobs:
           python3 test/test-agent-config.py
       - name: Baked Claude guard regressions
         run: python3 test/test-claude-guard.py
+      - name: Claude policy bundle regressions
+        run: python3 test/test-claude-policy.py
+      - name: Claude post-edit regressions
+        run: python3 test/test-claude-post-edit.py
+      - name: Bounded formatter regressions
+        run: python3 test/test-claude-format.py
       - name: Read-only mount planner regressions
         run: python3 test/test-mount-policy.py
       - name: Bounded ClientHello policy regressions

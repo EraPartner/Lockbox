@@ -16,10 +16,9 @@
 # .devcontainer/allowlist.extra.txt), its hosts are added on top of the base.
 set -euo pipefail
 
-AGENT="${DEV_SANDBOX_AGENT:-}"
+AGENT="${DEV_SANDBOX_AGENT:-claude}"
 case "$AGENT" in
   claude|codex) ;;
-  "") echo "dev: no provider selected; use dev-claude, dev-codex, or set DEV_SANDBOX_AGENT" >&2; exit 2 ;;
   *) echo "dev: unsupported agent '$AGENT' (use claude or codex)" >&2; exit 2 ;;
 esac
 echo "dev: selected provider '$AGENT'." >&2
@@ -60,6 +59,7 @@ source "$DC/launcher-common.sh"
 AGENT_CONFIG_TOOL="$DC/../../.devcontainer/agent-config.py"
 # shellcheck source=../../../.devcontainer/agent-config-launcher.sh
 source "$DC/../../.devcontainer/agent-config-launcher.sh"
+sandbox_require_host_node
 lockbox_require_staging_boundary "$TARGET" "$HOME/.claude-sandbox"
 mkdir -p "$STAGE_DIR"
 lockbox_acquire_startup_lock "$STAGE_DIR" "$0" "$@"
@@ -145,7 +145,11 @@ NEW_INBOUND="$(cat "$INBOUND_OUT" 2>/dev/null || true)"
 sandbox_git_ro_mounts "$TARGET" /workspaces/project
 sandbox_devcontainer_ro_mounts "$TARGET" /workspaces/project
 sandbox_ro_mount_policy_id
-LAUNCH_POLICY="$RO_MOUNT_POLICY_ID:agent-config-v3:input-v1"
+
+# Resolve only exact reviewed host roots. Unknown projects retain monitor-only behavior.
+CLAUDE_POLICY_PROJECT="$(node "$DC/claude-guard.mjs" --profile-for-root "$TARGET")"
+CLAUDE_POLICY_ROOT=/workspaces/project
+IMAGE="$IMAGE-$CLAUDE_POLICY_PROJECT"
 
 # --- 4) Build (skip when the image already exists, unless rebuild requested) --
 # F7: `container build` is cached but still spins up the builder VM on every launch
@@ -154,18 +158,20 @@ LAUNCH_POLICY="$RO_MOUNT_POLICY_ID:agent-config-v3:input-v1"
 # allowlist is mounted and applied only after the confirmed restart below;
 # inbound port bindings and firewall ports still require container recreation.
 if [[ "${DEV_SANDBOX_REBUILD:-0}" == 1 ]] || ! container image inspect "$IMAGE" >/dev/null 2>&1; then
-  container build -t "$IMAGE" "$DC" >/dev/null
+  container build --build-arg "CLAUDE_POLICY_PROJECT=$CLAUDE_POLICY_PROJECT" -t "$IMAGE" "$DC" >/dev/null
   # Free the ~2GB build-shim RAM now the image is built; it auto-restarts on the
   # next build. Set SANDBOX_KEEP_BUILDER=1 to leave it up (rapid rebuilds).
   [[ -n "${SANDBOX_KEEP_BUILDER:-}" ]] || container builder stop >/dev/null 2>&1 || true
 fi
 
+sandbox_image_policy_id "$IMAGE"
+LAUNCH_POLICY="$RO_MOUNT_POLICY_ID:$IMAGE_POLICY_ID:agent-config-v3:input-v1"
+
 # --- 5) Idempotent run: reuse running / start stopped / else create ----------
 echo "dev: target $TARGET  (container $NAME)" >&2
-# Install cleanup before reuse checks. Keep-warm failures still abort startup;
-# policy confirmation is invalidated before any transition and cannot be reused.
+# Host preflight and creation metadata checks precede cleanup ownership.
+# Cleanup is armed before any startup transition or container lifecycle work.
 CID="$NAME"
-sandbox_install_stop_trap "$CID" "${DEV_SANDBOX_STOP_ON_EXIT:-1}"
 if [[ "${DEV_SANDBOX_REBUILD:-0}" == 1 ]]; then
   rm -f "$APPLIED_OUT"
   container rm -f "$NAME" >/dev/null 2>&1 || true
@@ -175,6 +181,12 @@ PORTS_CHANGED_MSG="dev: WARN: DEV_SANDBOX_PORTS changed, but the -p bindings and
 POLICY_CONFIRMED=0
 RUNNING_NAMES="$(container ls -q)" || { echo 'dev: cannot inspect running containers; refusing policy change.' >&2; exit 1; }
 ALL_NAMES="$(container ls -aq)" || { echo 'dev: cannot inspect existing containers; refusing policy change.' >&2; exit 1; }
+if grep -qx "$NAME" <<< "$ALL_NAMES"; then
+sandbox_require_container_policy "$NAME" "$AGENT" "$LAUNCH_POLICY" || {
+  echo "launcher: recreate with DEV_SANDBOX_REBUILD=1 $0" >&2; exit 1;
+}
+fi
+sandbox_install_stop_trap "$CID" "${DEV_SANDBOX_STOP_ON_EXIT:-1}"
 if grep -qx "$NAME" <<< "$RUNNING_NAMES"; then
   GENERATION="$(lockbox_container_generation "$NAME")" || {
     echo 'dev: cannot identify the running container boot; refusing policy reuse.' >&2; exit 1;
@@ -249,19 +261,25 @@ fi
 # SANDBOX_AGENT is fixed at container creation. Detect stale/manual containers
 # before lifecycle hooks use the wrong provider configuration or diagnostics.
 # The cleanup trap is already installed so this abort cannot orphan the VM.
-CONTAINER_AGENT="$(container exec "$NAME" printenv SANDBOX_AGENT 2>/dev/null || true)"
-if [[ "$CONTAINER_AGENT" != "$AGENT" ]]; then
-  echo "dev: ABORT — container '$NAME' has stale provider state '${CONTAINER_AGENT:-unset}'." >&2
-  echo "     Recreate it with: DEV_SANDBOX_REBUILD=1 $LAUNCHER" >&2
+sandbox_require_container_policy "$NAME" "$AGENT" "$LAUNCH_POLICY" || {
+  echo "launcher: recreate with DEV_SANDBOX_REBUILD=1 $0" >&2; exit 1;
+}
+# --- 8) Launch-integrity gate (cached for this running container boot) --------
+# The canonical helper accepts only an exact root-owned cache record bound to
+# the boot, verifier, manifest, service identity, and protocol. On a miss it
+# invokes the absolute baked checker with startup hooks and pinfile overrides
+# cleared, then atomically publishes the cache as root. A cold/stale image still
+# fails closed because a missing checker or manifest can never produce a record.
+if ! sandbox_verify_pins_cached "$NAME" dev \
+    /usr/local/bin/dev-sandbox-verify-pins \
+    /usr/local/share/dev-sandbox/binary-pins.txt \
+    DEV_SANDBOX_PINFILE dev-sandbox; then
+  echo "dev: ABORT — binary fingerprint drift in the sandbox (see above)." >&2
+  echo "  If you intentionally upgraded a tool, rebuild to re-pin: DEV_SANDBOX_REBUILD=1 $LAUNCHER" >&2
   exit 1
 fi
 
-CONTAINER_POLICY="$(container exec "$NAME" printenv SANDBOX_LAUNCH_POLICY 2>/dev/null || true)"
-if [[ "$CONTAINER_POLICY" != "$LAUNCH_POLICY" ]]; then
-  echo "launcher: stale read-only mount/configuration policy; recreate with: DEV_SANDBOX_REBUILD=1 $LAUNCHER" >&2
-  exit 1
-fi
-lockbox_require_managed_policy "$NAME"
+lockbox_require_managed_policy "$NAME" "$CLAUDE_POLICY_PROJECT" "$CLAUDE_POLICY_ROOT"
 lockbox_require_agent_layout "$NAME" "DEV_SANDBOX_REBUILD=1 $LAUNCHER"
 
 # --- 6) Confirm policy, then replay lifecycle as dev -------------------------
@@ -284,7 +302,10 @@ mv -f "$APPLIED_TEMP" "$APPLIED_OUT"
 
 container exec --user dev "$NAME" bash -lc '
   set -e
-  [[ -f /home/dev/.postcreate-done ]] || { bash /usr/local/share/dev-sandbox/post-create.sh && touch /home/dev/.postcreate-done; }
+  if [[ ! -f /home/dev/.postcreate-done ]]; then
+    bash /usr/local/share/dev-sandbox/post-create.sh
+    touch /home/dev/.postcreate-done
+  fi
   bash /usr/local/share/dev-sandbox/post-start.sh'
 
 lockbox_prepare_agent_config "$NAME" "$CONFIG_STAGE_DIR" "${DEV_SANDBOX_CONFIG_REFRESH:-${DEV_SANDBOX_CLAUDE_CONFIG_REFRESH:-0}}"
@@ -292,29 +313,14 @@ lockbox_prepare_agent_config "$NAME" "$CONFIG_STAGE_DIR" "${DEV_SANDBOX_CONFIG_R
 EXEC_ENV=(-e BASH_ENV=/home/dev/.safe-chain/scripts/init-posix.sh)
 lockbox_forward_mcp_environment "$NAME"
 
-# --- 8) Launch-integrity gate (cached for this running container boot) --------
-# The canonical helper accepts only an exact root-owned cache record bound to
-# the boot, verifier, manifest, service identity, and protocol. On a miss it
-# invokes the absolute baked checker with startup hooks and pinfile overrides
-# cleared, then atomically publishes the cache as root. A cold/stale image still
-# fails closed because a missing checker or manifest can never produce a record.
-if ! sandbox_verify_pins_cached "$NAME" dev \
-    /usr/local/bin/dev-sandbox-verify-pins \
-    /usr/local/share/dev-sandbox/binary-pins.txt \
-    DEV_SANDBOX_PINFILE dev-sandbox; then
-  echo "dev: ABORT — binary fingerprint drift in the sandbox (see above)." >&2
-  echo "  If you intentionally upgraded a tool, rebuild to re-pin: DEV_SANDBOX_REBUILD=1 $LAUNCHER" >&2
-  exit 1
-fi
-
 # --- 9) Resolve the in-container working dir from the host PWD ----------------
 CONTAINER_CWD="/workspaces/project"
 rel="${HOST_PWD#"$TARGET"}"
 [[ "$rel" != "$HOST_PWD" && -n "$rel" ]] && CONTAINER_CWD="/workspaces/project/${rel#/}"
 
 # --- 10) Authenticate Codex on first use, then open the selected agent --------
-# (The on-exit container cleanup trap was installed at step 5, right after the
-# container came up, so an early abort can't orphan the VM.)
+# The cleanup trap was installed at step 5 after host policy validation and
+# before startup, so later failures cannot orphan the selected VM.
 if [[ -n "${DEV_SANDBOX_SHELL:-}" ]]; then
   set -- bash
 else

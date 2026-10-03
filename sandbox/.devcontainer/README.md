@@ -34,8 +34,8 @@ provider does not match or whose mount/configuration policy fingerprint is stale
 Both CLIs remain installed and integrity-checked; that does not make both providers
 active in one session.
 
-Plain `dev` without `DEV_SANDBOX_AGENT` fails with selection instructions. It
-does not guess from the calling terminal or silently default to one provider.
+Plain `dev` defaults to Claude. Use `dev-codex` or `DEV_SANDBOX_AGENT=codex`
+for Codex; invalid provider names still fail before startup.
 
 ## Mounted files and private state
 
@@ -63,7 +63,9 @@ No host Claude guard directory or Git configuration file is required. Host Claud
 but command availability, plugin discovery and endpoint access need verification.
 
 First import preserves existing private files and values. Ordinary starts reuse
-private state. Every provider launch requires host Python 3.11 or newer.
+private state. Every provider launch requires host Python 3.11 or newer and Node.js
+18 or newer. Host Node.js generates the reviewed policy identity; a missing or
+unsupported runtime fails before staging configuration or building images.
 After changing authored input, run `DEV_SANDBOX_CONFIG_REFRESH=1 dev-claude` or
 `DEV_SANDBOX_CONFIG_REFRESH=1 dev-codex` from the target repository. Replaced files
 receive private rollback backups. Retired imported entries are removed only when
@@ -175,3 +177,9 @@ sufficient. Successful fleet sync, image rebuilds and runtime checks are require
 rejects missing/malformed visible SNI and ECH, including GREASE, without TLS
 decryption. The booted egress fixture checks CONNECT/SNI equality through Squid
 using different allowlisted names.
+
+The Claude policy bundle is baked into root-owned image paths. It includes the shared
+command guard, post-edit monitor, bounded formatter and exact project opt-ins. The
+launcher streams the reviewed host checker and verifies every dependency against
+current source before lifecycle scripts or credentials. No host hook mount is used.
+Rebuild after changing the canonical LockBox bundle; stale policy stops startup.

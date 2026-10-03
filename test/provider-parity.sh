@@ -54,7 +54,8 @@ for launcher in .devcontainer/bin/agent sandbox/.devcontainer/bin/dev; do
   require_literal "$launcher" 'lockbox_require_agent_layout'
   require_literal "$launcher" 'sandbox_devcontainer_ro_mounts'
   require_literal "$launcher" 'sandbox_ro_mount_policy_id'
-  require_literal "$launcher" 'CONTAINER_POLICY'
+  require_literal "$launcher" 'sandbox_image_policy_id'
+  require_literal "$launcher" 'sandbox_require_container_policy'
   require_literal "$launcher" 'TTY_FLAGS=(-i)'
 done
 require_literal .devcontainer/agent-config-launcher.sh 'claude auth login'

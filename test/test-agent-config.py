@@ -6,7 +6,7 @@ host home, authentication file, container, or network is used.
 """
 
 import importlib.util
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 import io
 import json
 import os
@@ -28,6 +28,27 @@ spec.loader.exec_module(tool)
 
 
 class ConfigTests(unittest.TestCase):
+    def test_missing_authored_source_warns_without_importing_native_by_default(self):
+        for provider in ("claude", "codex"):
+            with self.subTest(provider=provider):
+                output = io.StringIO()
+                with redirect_stderr(output):
+                    tool.stage(
+                        provider,
+                        self.staged(provider),
+                        self.root / "missing",
+                        self.home,
+                    )
+                self.assertIn(
+                    "authored configuration source is missing", output.getvalue()
+                )
+                self.assertNotIn(str(self.home), output.getvalue())
+                instruction = "CLAUDE.md" if provider == "claude" else "AGENTS.md"
+                self.assertFalse(
+                    (self.staged(provider) / "files" / instruction).exists()
+                )
+                self.assertFalse((self.staged(provider) / "files/agents").exists())
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)

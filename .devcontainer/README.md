@@ -36,12 +36,19 @@ no devcontainer CLI / Dev Containers extension; there is no `compose.yaml` and n
 
 The host entry points `.devcontainer/bin/claude` and `.devcontainer/bin/codex`
 select a provider and call the shared `.devcontainer/bin/agent` implementation.
-It forwards invocations into provider-specific containers that share one image.
+The bare `agent` entry point defaults to Claude. It forwards invocations into
+provider-specific containers that share one image.
 Both providers import curated authored configuration once and keep native login
 and runtime state in separate private volumes. Both run an idempotent image build,
-then create, start or reuse the selected container, wait for the lifecycle barrier,
-prepare configuration, verify pins, and open the selected CLI. Reuse refuses a
-missing or mismatched provider or an older mount/configuration policy. There is no
+then create, start or reuse the selected container, verify pins and managed policy,
+wait for proxy readiness, run lifecycle scripts, prepare configuration, and open the
+selected CLI. Reuse refuses a
+missing or mismatched provider, image descriptor or mount/configuration policy. Image
+inspection must contain an OCI SHA-256 digest; errors fail closed. The descriptor
+hash includes metadata, so metadata changes can also require recreation. A stopped
+container is reused only after its host metadata passes validation. Cleanup
+starts when the launcher selects a validated container or begins creation.
+There is no
 in-repo Keychain lookup. Piped input reaches either CLI without allocating a TTY.
 
 The fish function `lockbox-claude` (in `~/.config/fish/functions/`) walks up from
@@ -166,7 +173,8 @@ RAM and 4 CPUs (`-m 4g -c 4`), with `--tmpfs /tmp` and `--tmpfs /var/tmp`.
 
 **Prerequisites and portability:** host launchers require macOS and Apple
 Container; every provider launch needs host Python 3.11
-or newer. Provider login uses the native CLI inside Linux. No Git credential or
+or newer and Node.js 18 or newer. Missing or unsupported host Node.js fails before
+configuration staging or image builds. Provider login uses the native CLI inside Linux. No Git credential or
 SSH agent is forwarded.
 
 ## Persistence
@@ -287,3 +295,9 @@ relying on a new policy; a portable fixture is not a live mount check.
 
 Build, install and release scripts elsewhere in the writable workspace remain
 editable. Review their diff before running them on the host.
+
+The Claude policy bundle is baked into root-owned image paths. It includes the shared
+command guard, post-edit monitor, bounded formatter and exact project opt-ins. The
+launcher streams the reviewed host checker and verifies every dependency against
+current source before lifecycle scripts or credentials. No host hook mount is used.
+Rebuild after changing the canonical LockBox bundle; stale policy stops startup.

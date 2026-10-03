@@ -129,8 +129,8 @@ The in-repo entry points are:
   separate containers and private config volumes, but share the same image,
   egress policy, lifecycle, read-only git mounts, and pin gate.
 - `sandbox/.devcontainer/bin/dev-claude` and `bin/dev-codex` target the current
-  repository. Plain `bin/dev` requires `DEV_SANDBOX_AGENT`; it has no provider
-  default.
+  repository. Plain `bin/dev` defaults to Claude; `DEV_SANDBOX_AGENT=codex`
+  selects Codex. The bare `.devcontainer/bin/agent` also defaults to Claude.
 - Both providers use native private login, with optional explicit environment
   authentication. Claude uses `claude auth login`; Codex uses device-code login.
 - Sibling projects keep their existing launchers. The generated firewall installs
@@ -157,7 +157,8 @@ excluded; nothing is exported or copied back to the host.
 Claude uses `CLAUDE_CONFIG_DIR=/home/dev/.claude`. Codex uses
 `CODEX_HOME=/home/dev/.codex` and file credential storage. No in-repo Keychain lookup
 or legacy global-state migration is needed. Import runs after the lifecycle barrier
-and requires host Python 3.11 or newer on every launch. Both images bake the
+and requires host Python 3.11 or newer on every launch. Host policy generation also
+requires Node.js 18 or newer, checked before staging or builds. Both images bake the
 root-owned Claude guard and managed settings; launch rejects missing or stale policy.
 
 Both pinned CLIs read project `AGENTS.md`; the Claude builtin is enabled to read it

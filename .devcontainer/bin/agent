@@ -18,10 +18,9 @@
 # in image); provider config uses NATIVE named volumes (root can fix ownership).
 set -euo pipefail
 
-AGENT="${LOCKBOX_AGENT:-}"
+AGENT="${LOCKBOX_AGENT:-claude}"
 case "$AGENT" in
   claude|codex) ;;
-  "") echo "lockbox: no agent selected; use .devcontainer/bin/claude or .devcontainer/bin/codex" >&2; exit 2 ;;
   *) echo "lockbox: unsupported agent '$AGENT'" >&2; exit 2 ;;
 esac
 echo "lockbox: selected provider '$AGENT'." >&2
@@ -63,6 +62,7 @@ source "$LIB"
 AGENT_CONFIG_TOOL="$DC/agent-config.py"
 # shellcheck source=../agent-config-launcher.sh
 source "$DC/agent-config-launcher.sh"
+sandbox_require_host_node
 STAGE_DIR="$HOME/.claude-sandbox/stage/lockbox-$AGENT"
 lockbox_require_staging_boundary "$PROJECT_ROOT" "$HOME/.claude-sandbox"
 mkdir -p "$STAGE_DIR"
@@ -73,25 +73,35 @@ lockbox_acquire_startup_lock "$STAGE_DIR" "$0" "$@"
 sandbox_git_ro_mounts "$PROJECT_ROOT" /workspaces/LockBox
 sandbox_devcontainer_ro_mounts "$PROJECT_ROOT" /workspaces/LockBox
 sandbox_ro_mount_policy_id
-LAUNCH_POLICY="$RO_MOUNT_POLICY_ID:agent-config-v3"
 
 # --- 2) Build (cached → fast) ------------------------------------------------
 container build -t "$IMAGE" "$DC" >/dev/null
 # Free the ~2GB build-shim RAM now the image is built; it auto-restarts on the next
 # `container build`. Set SANDBOX_KEEP_BUILDER=1 to leave it up (rapid rebuilds).
 [[ -n "${SANDBOX_KEEP_BUILDER:-}" ]] || container builder stop >/dev/null 2>&1 || true
+sandbox_image_policy_id "$IMAGE"
+LAUNCH_POLICY="$RO_MOUNT_POLICY_ID:$IMAGE_POLICY_ID:agent-config-v3"
 
 AGENT_MOUNTS=(-v "lockbox-$AGENT:/home/dev/.$AGENT"
   -v "$STAGE_DIR:/home/dev/.agent-stage-root:ro")
 
 
 # --- 3) Idempotent run: reuse running / start stopped / else create ----------
+CID="$NAME"
 if [[ "${LOCKBOX_REBUILD:-0}" == 1 ]]; then
   container rm -f "$NAME" >/dev/null 2>&1 || true
 fi
-if container ls -q 2>/dev/null | grep -qx "$NAME"; then
+RUNNING_NAMES="$(container ls -q)" || exit 1
+ALL_NAMES="$(container ls -aq)" || exit 1
+if grep -qx "$NAME" <<< "$ALL_NAMES"; then
+sandbox_require_container_policy "$NAME" "$AGENT" "$LAUNCH_POLICY" || {
+  echo "launcher: recreate with LOCKBOX_REBUILD=1 $0" >&2; exit 1;
+}
+fi
+sandbox_install_stop_trap "$CID" "${LOCKBOX_STOP_ON_EXIT:-1}"
+if grep -qx "$NAME" <<< "$RUNNING_NAMES"; then
   :
-elif container ls -aq 2>/dev/null | grep -qx "$NAME"; then
+elif grep -qx "$NAME" <<< "$ALL_NAMES"; then
   container start "$NAME" >/dev/null
 else
   container run -d --name "$NAME" \
@@ -119,29 +129,27 @@ else
     ${AGENT_MOUNTS[@]+"${AGENT_MOUNTS[@]}"} \
     "$IMAGE" >/dev/null
 fi
-CID="$NAME"
-
-# Install cleanup before provider, lifecycle, or integrity checks can abort.
-sandbox_install_stop_trap "$CID" "${LOCKBOX_STOP_ON_EXIT:-1}"
 
 # SANDBOX_AGENT is fixed when a container is created. Refuse to reuse a stale or
 # manually-created container under the selected provider's name: otherwise the
 # lifecycle and doctor can describe/check Claude while the launcher opens Codex
 # (or vice versa). Provider config lives in named volumes, so rebuilding the
 # container does not discard the selected provider's login/config cache.
-CONTAINER_AGENT="$(container exec "$NAME" printenv SANDBOX_AGENT 2>/dev/null || true)"
-if [[ "$CONTAINER_AGENT" != "$AGENT" ]]; then
-  echo "$AGENT (lockbox): ABORT — container '$NAME' has stale provider state '${CONTAINER_AGENT:-unset}'." >&2
-  echo "  Recreate it with: LOCKBOX_REBUILD=1 $PROJECT_ROOT/.devcontainer/bin/$AGENT" >&2
+sandbox_require_container_policy "$NAME" "$AGENT" "$LAUNCH_POLICY" || {
+  echo "launcher: recreate with LOCKBOX_REBUILD=1 $0" >&2; exit 1;
+}
+# --- 6) Launch-integrity gate (mandatory; fail closed) -----------------------
+# A missing checker is NOT a soft warning: the current Dockerfile always bakes
+# lockbox-verify-pins, so its absence means a stale pre-pin image is running
+# UNVERIFIED. Hard-abort and tell the operator to rebuild (matches bin/dev).
+if ! sandbox_verify_pins_cached "$NAME" "$SVC_USER"     /usr/local/bin/lockbox-verify-pins /usr/local/share/lockbox/binary-pins.txt LOCKBOX_PINFILE lockbox; then
+  echo "launcher: ABORT — binary fingerprint drift. Rebuild with: LOCKBOX_REBUILD=1 $LAUNCHER" >&2
   exit 1
 fi
 
-CONTAINER_POLICY="$(container exec "$NAME" printenv SANDBOX_LAUNCH_POLICY 2>/dev/null || true)"
-if [[ "$CONTAINER_POLICY" != "$LAUNCH_POLICY" ]]; then
-  echo "launcher: stale read-only mount/configuration policy; recreate with: LOCKBOX_REBUILD=1 $LAUNCHER" >&2
-  exit 1
-fi
-lockbox_require_managed_policy "$NAME"
+CLAUDE_POLICY_PROJECT=LockBox
+CLAUDE_POLICY_ROOT=/workspaces/LockBox
+lockbox_require_managed_policy "$NAME" "$CLAUDE_POLICY_PROJECT" "$CLAUDE_POLICY_ROOT"
 lockbox_require_agent_layout "$NAME" "LOCKBOX_REBUILD=1 $LAUNCHER"
 
 # Wait for the egress proxy (entrypoint applies firewall → squid).
@@ -156,7 +164,8 @@ container exec --user "$SVC_USER" "$NAME" bash -lc '
   set -e
   cd /workspaces/LockBox
   if [[ ! -f /home/dev/.postcreate-done ]]; then
-    bash .devcontainer/post-create.sh && touch /home/dev/.postcreate-done
+    bash .devcontainer/post-create.sh
+    touch /home/dev/.postcreate-done
   fi
   bash .devcontainer/post-start.sh'
 
@@ -165,15 +174,6 @@ lockbox_prepare_agent_config "$NAME" "$STAGE_DIR" "${LOCKBOX_CONFIG_REFRESH:-${L
 # Safe Chain startup hooks belong only to dev processes, never root startup.
 EXEC_ENV=(-e BASH_ENV=/home/dev/.safe-chain/scripts/init-posix.sh)
 lockbox_forward_mcp_environment "$NAME"
-
-# --- 6) Launch-integrity gate (mandatory; fail closed) -----------------------
-# A missing checker is NOT a soft warning: the current Dockerfile always bakes
-# lockbox-verify-pins, so its absence means a stale pre-pin image is running
-# UNVERIFIED. Hard-abort and tell the operator to rebuild (matches bin/dev).
-if ! sandbox_verify_pins_cached "$NAME" "$SVC_USER"     /usr/local/bin/lockbox-verify-pins /usr/local/share/lockbox/binary-pins.txt LOCKBOX_PINFILE lockbox; then
-  echo "launcher: ABORT — binary fingerprint drift. Rebuild with: LOCKBOX_REBUILD=1 $LAUNCHER" >&2
-  exit 1
-fi
 
 # --- 8) Authenticate Codex on first use, then open the selected agent ---------
 TTY_FLAGS=(-i)

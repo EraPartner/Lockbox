@@ -24,10 +24,15 @@ check: ## Verify vendored copies, allowlists, required tools, and pins are in sy
 	./test/verify-pins-manifest.sh
 	$(PYTHON) test/test-sync.py
 	$(PYTHON) test/test-claude-readiness.py
+	$(PYTHON) test/test-image-policy.py
+	$(PYTHON) test/test-host-prerequisites.py
 	$(PYTHON) test/test-launch-lock.py
 	$(PYTHON) test/test-doctor.py
 	$(PYTHON) test/test-agent-config.py
 	$(PYTHON) test/test-claude-guard.py
+	$(PYTHON) test/test-claude-policy.py
+	$(PYTHON) test/test-claude-post-edit.py
+	$(PYTHON) test/test-claude-format.py
 	$(PYTHON) test/test-mount-policy.py
 	$(PYTHON) test/test-clienthello-policy.py
 

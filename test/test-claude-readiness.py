@@ -119,6 +119,8 @@ sandbox_verify_pins_cached() {
         for dc in (self.root / ".devcontainer", self.root / "sandbox/.devcontainer"):
             (dc / "launcher-common.sh").write_text(library)
             (dc / "allowlist.txt").write_text("synthetic.example\n")
+            for name in ("claude-guard.mjs", "claude-post-edit.mjs", "claude-explicit-format.sh", "claude-policy-verify.sh", "claude-policy-install.sh"):
+                shutil.copy2(ROOT / ".devcontainer" / name, dc / name)
         self.write(self.home / ".gitconfig", "# synthetic mount source\n")
         self.write(
             self.root / ".devcontainer/claude-guard.mjs",
@@ -171,8 +173,16 @@ if command == "rm":
     state["status"] = "missing"
     save()
     finish(command)
-if command in ("system", "build", "builder", "image"):
-    finish(command)
+image_descriptor = [{"configuration": {"descriptor": {"digest": "sha256:" + "1" * 64}}}]
+image_policy = hashlib.sha256((json.dumps(image_descriptor, sort_keys=True, separators=(",", ":")) + "\n").encode()).hexdigest()
+if command == "image":
+    finish(command, 31 if gate in ("image-inspect", "build") else 0, output=json.dumps(image_descriptor))
+if command == "inspect":
+    policy = "fixture-ro-policy:" + image_policy + ":agent-config-v3" + (":input-v1" if name.startswith("dev-sandbox") else "")
+    metadata = [{"configuration": {"id": name, "image": {"descriptor": {"digest": "sha256:" + ("2" if gate == "container-image" else "1") * 64}}, "initProcess": {"environment": ["SANDBOX_AGENT=" + ("stale" if gate == "provider" else provider), "SANDBOX_LAUNCH_POLICY=" + ("stale" if gate == "policy" else policy)]}}}]
+    finish("creation-metadata", 32 if gate == "metadata-inspect" else 0, output=json.dumps(metadata))
+if command in ("system", "build", "builder"):
+    finish(command, 33 if command == "build" and gate == "build" else 0)
 if command == "test-pin-verification":
     finish("pins", 19 if gate == "pins" else 0)
 if command == "ls":
@@ -182,6 +192,9 @@ if command == "ls":
 if command != "exec":
     finish("unexpected", 98)
 last = args[-1]
+if "/bin/bash" in args and "-s" in args:
+    sys.stdin.read()
+    finish("managed-policy", 21 if gate in ("baked-policy", "managed-policy") else 0)
 if "sha256sum" in args:
     if args[-1] == "/etc/squid/allowlist.txt":
         mounted = Path(os.environ["LOCKBOX_TEST_STAGE"]) / "allowlist.txt"
@@ -199,7 +212,7 @@ if "python3" in args and "-c" in args:
 if last == "SANDBOX_AGENT":
     finish("provider", output="stale" if gate == "provider" else provider)
 if last == "SANDBOX_LAUNCH_POLICY":
-    finish("policy", output="stale" if gate == "policy" else "fixture-ro-policy:agent-config-v3" + (":input-v1" if name.startswith("dev-sandbox") else ""))
+    finish("policy", output="stale" if gate == "policy" else "fixture-ro-policy:" + hashlib.sha256(b'{"digest":"sha256:1111111111111111111111111111111111111111111111111111111111111111"}\n').hexdigest() + ":agent-config-v3" + (":input-v1" if name.startswith("dev-sandbox") else ""))
 if last in ("CLAUDE_CONFIG_DIR", "CODEX_HOME"):
     finish("layout", output="/wrong" if gate == "layout" else "/home/dev/." + provider)
 if "/opt/python/bin/python3" in args:
@@ -301,6 +314,7 @@ with open(os.environ["LOCKBOX_TEST_CALLS"], "a") as stream:
         preserve_runtime=False,
         confirmation=None,
         existing_allowlist="synthetic.example\n",
+        selected_provider=True,
     ):
         self.calls.write_text("")
         # Keep unrelated host environment values out of the auth tests. Each
@@ -396,6 +410,9 @@ with open(os.environ["LOCKBOX_TEST_CALLS"], "a") as stream:
                 "LOCKBOX_TEST_MCP_NAMES": mcp_names,
             }
         )
+        if not selected_provider:
+            env.pop("LOCKBOX_AGENT", None)
+            env.pop("DEV_SANDBOX_AGENT", None)
         if auth:
             env[auth] = "synthetic-auth"
         env.pop("SYNTHETIC_MCP_REFERENCE", None)
@@ -416,6 +433,14 @@ with open(os.environ["LOCKBOX_TEST_CALLS"], "a") as stream:
             "unexpected", [record["action"] for record in records], result.stderr
         )
         return result, records
+
+    def test_unset_provider_selects_claude(self):
+        for kind in ("lockbox", "generic"):
+            result, records = self.launch(kind, "claude", selected_provider=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("selected provider 'claude'", result.stderr)
+            session = next(record for record in records if record["action"] == "agent-session")
+            self.assertEqual(session["argv"][-2:], ["claude", "--version"])
 
     def test_startup_failures_stop_both_provider_containers(self):
         for kind in ("lockbox", "generic"):
@@ -438,9 +463,19 @@ with open(os.environ["LOCKBOX_TEST_CALLS"], "a") as stream:
                             result, records = self.launch(kind, provider, gate, fresh)
                             actions = [r["action"] for r in records]
                             self.assertNotEqual(result.returncode, 0, result.stderr)
-                            self.assertEqual(actions.count("stop"), 1)
+                            self.assertEqual(actions.count("stop"), 0 if fresh == "0" and gate in ("provider", "policy") else 1)
                             self.assertNotIn("agent-session", actions)
                             self.assertNotIn("host-export", actions)
+
+    def test_host_preflight_and_stopped_metadata_refusal_preserve_container(self):
+        for kind in ("lockbox", "generic"):
+            for provider in ("claude", "codex"):
+                for gate in ("build", "image-inspect", "metadata-inspect", "provider", "policy", "container-image", "list"):
+                    for fresh in ("0", "stopped"):
+                        with self.subTest(kind=kind, provider=provider, gate=gate, fresh=fresh):
+                            result, records = self.launch(kind, provider, gate=gate, fresh=fresh)
+                            self.assertNotEqual(result.returncode, 0, result.stderr)
+                            self.assertFalse(any(r["action"] in ("stop", "start", "run", "agent-session", "lifecycle", "generation") for r in records))
 
     def test_stale_baked_claude_policy_stops_before_configuration_or_login(self):
         for kind in ("lockbox", "generic"):
@@ -633,7 +668,7 @@ with open(os.environ["LOCKBOX_TEST_CALLS"], "a") as stream:
                         actions.index("lifecycle"), actions.index("config-init")
                     )
                     self.assertLess(
-                        actions.index("config-report"), actions.index("pins")
+                        actions.index("pins"), actions.index("lifecycle")
                     )
                     self.assertLess(
                         actions.index("pins"), actions.index("login-status")

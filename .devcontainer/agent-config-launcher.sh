@@ -60,26 +60,7 @@ print(boot + ":" + started)
 }
 
 lockbox_require_managed_policy() {
-  [[ "$AGENT" == claude ]] || return 0
-  # Detect an old image even when a new container has the current launch policy.
-  local expected actual
-  expected="$(shasum -a 256 "$(dirname "$AGENT_CONFIG_TOOL")/claude-guard.mjs" | cut -d' ' -f1)"
-  actual="$(container exec "$1" sha256sum /usr/local/share/claude-guard/guard.mjs 2>/dev/null | cut -d' ' -f1)"
-  if [[ "$actual" != "$expected" ]]; then
-    echo 'launcher: missing or stale baked Claude policy; rebuild the selected image and container.' >&2
-    return 1
-  fi
-  container exec --user dev -e BASH_ENV= "$1" node /usr/local/share/claude-guard/guard.mjs --managed-settings \
-    | container exec -i --user dev -e BASH_ENV= "$1" python3 -c '
-import json, os, pathlib, stat, sys
-paths = [pathlib.Path("/usr/local/share/claude-guard/guard.mjs"), pathlib.Path("/etc/claude-code/managed-settings.json")]
-assert json.load(sys.stdin) == json.loads(paths[1].read_text())
-for path in paths:
-    for item in (path, *path.parents):
-        info = item.stat()
-        assert not item.is_symlink() and info.st_uid == 0 and not info.st_mode & 0o022
-    assert not os.access(path, os.W_OK)
-'
+  sandbox_require_claude_policy "$1" dev "$DC" "$2" "$3"
 }
 
 lockbox_agent_config_run() {

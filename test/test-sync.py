@@ -28,6 +28,10 @@ class SyncTests(unittest.TestCase):
             "claude-stage-items.txt",
             "clienthello-policy.py",
             "claude-guard.mjs",
+            "claude-post-edit.mjs",
+            "claude-explicit-format.sh",
+            "claude-policy-verify.sh",
+            "claude-policy-install.sh",
         ):
             shutil.copy2(ROOT / name, self.root / name)
         for name in (".devcontainer", "sandbox/.devcontainer"):
