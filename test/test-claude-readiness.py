@@ -119,7 +119,13 @@ sandbox_verify_pins_cached() {
         for dc in (self.root / ".devcontainer", self.root / "sandbox/.devcontainer"):
             (dc / "launcher-common.sh").write_text(library)
             (dc / "allowlist.txt").write_text("synthetic.example\n")
-            for name in ("claude-guard.mjs", "claude-post-edit.mjs", "claude-explicit-format.sh", "claude-policy-verify.sh", "claude-policy-install.sh"):
+            for name in (
+                "claude-guard.mjs",
+                "claude-post-edit.mjs",
+                "claude-explicit-format.sh",
+                "claude-policy-verify.sh",
+                "claude-policy-install.sh",
+            ):
                 shutil.copy2(ROOT / ".devcontainer" / name, dc / name)
         self.write(self.home / ".gitconfig", "# synthetic mount source\n")
         self.write(
@@ -439,7 +445,9 @@ with open(os.environ["LOCKBOX_TEST_CALLS"], "a") as stream:
             result, records = self.launch(kind, "claude", selected_provider=False)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("selected provider 'claude'", result.stderr)
-            session = next(record for record in records if record["action"] == "agent-session")
+            session = next(
+                record for record in records if record["action"] == "agent-session"
+            )
             self.assertEqual(session["argv"][-2:], ["claude", "--version"])
 
     def test_startup_failures_stop_both_provider_containers(self):
@@ -463,19 +471,49 @@ with open(os.environ["LOCKBOX_TEST_CALLS"], "a") as stream:
                             result, records = self.launch(kind, provider, gate, fresh)
                             actions = [r["action"] for r in records]
                             self.assertNotEqual(result.returncode, 0, result.stderr)
-                            self.assertEqual(actions.count("stop"), 0 if fresh == "0" and gate in ("provider", "policy") else 1)
+                            self.assertEqual(
+                                actions.count("stop"),
+                                0
+                                if fresh == "0" and gate in ("provider", "policy")
+                                else 1,
+                            )
                             self.assertNotIn("agent-session", actions)
                             self.assertNotIn("host-export", actions)
 
     def test_host_preflight_and_stopped_metadata_refusal_preserve_container(self):
         for kind in ("lockbox", "generic"):
             for provider in ("claude", "codex"):
-                for gate in ("build", "image-inspect", "metadata-inspect", "provider", "policy", "container-image", "list"):
+                for gate in (
+                    "build",
+                    "image-inspect",
+                    "metadata-inspect",
+                    "provider",
+                    "policy",
+                    "container-image",
+                    "list",
+                ):
                     for fresh in ("0", "stopped"):
-                        with self.subTest(kind=kind, provider=provider, gate=gate, fresh=fresh):
-                            result, records = self.launch(kind, provider, gate=gate, fresh=fresh)
+                        with self.subTest(
+                            kind=kind, provider=provider, gate=gate, fresh=fresh
+                        ):
+                            result, records = self.launch(
+                                kind, provider, gate=gate, fresh=fresh
+                            )
                             self.assertNotEqual(result.returncode, 0, result.stderr)
-                            self.assertFalse(any(r["action"] in ("stop", "start", "run", "agent-session", "lifecycle", "generation") for r in records))
+                            self.assertFalse(
+                                any(
+                                    r["action"]
+                                    in (
+                                        "stop",
+                                        "start",
+                                        "run",
+                                        "agent-session",
+                                        "lifecycle",
+                                        "generation",
+                                    )
+                                    for r in records
+                                )
+                            )
 
     def test_stale_baked_claude_policy_stops_before_configuration_or_login(self):
         for kind in ("lockbox", "generic"):
@@ -667,9 +705,7 @@ with open(os.environ["LOCKBOX_TEST_CALLS"], "a") as stream:
                     self.assertLess(
                         actions.index("lifecycle"), actions.index("config-init")
                     )
-                    self.assertLess(
-                        actions.index("pins"), actions.index("lifecycle")
-                    )
+                    self.assertLess(actions.index("pins"), actions.index("lifecycle"))
                     self.assertLess(
                         actions.index("pins"), actions.index("login-status")
                     )
