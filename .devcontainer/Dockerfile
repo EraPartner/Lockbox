@@ -106,9 +106,9 @@ RUN printf 'export PATH="/usr/local/share/npm-global/bin:/opt/python/bin:/usr/lo
 # wrapper; the real binary is a per-arch optional dep that postinstall copies to
 # bin/claude.exe. We hash the PAYLOAD, restore it if postinstall was blocked
 # (npm >= 12 leaves a 500-byte stub), then re-check PATH. Fail-closed.
-ARG CLAUDE_CODE_VERSION=2.1.287
-ARG CLAUDE_CODE_SHA256_ARM64=e4daf793d1e74fb0d9874dd09e98690bbfd7be515f78a87fd05b9e2b4bb33b03
-ARG CLAUDE_CODE_SHA256_AMD64=3920489a5109cff5786a1a392c25277408ff22bc796d5edb9c16a60e5a1718f0
+ARG CLAUDE_CODE_VERSION=2.1.291
+ARG CLAUDE_CODE_SHA256_ARM64=c18473a04cc4f077435d5d9081f09ebea46e699eb2825cea64741c4bccb87647
+ARG CLAUDE_CODE_SHA256_AMD64=078fad28d0297c9a25d306b635b2d8816c6839347520f29eb54ffea5d56142fb
 RUN set -eux; \
     npm install -g --no-fund --no-audit "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"; \
     case "$(dpkg --print-architecture)" in arm64) na=linux-arm64; want="${CLAUDE_CODE_SHA256_ARM64}" ;; amd64) na=linux-x64; want="${CLAUDE_CODE_SHA256_AMD64}" ;; *) exit 1 ;; esac; \
@@ -130,9 +130,9 @@ RUN set -eux; \
     claude --version
 
 # --- OpenAI Codex CLI (native payload hash-pinned per architecture) ----------
-ARG CODEX_VERSION=0.160.0
-ARG CODEX_SHA256_ARM64=50b06603bdcdac39b714f5c3e68583c002b8ad8779ebfdaaf4932ff016b379c0
-ARG CODEX_SHA256_AMD64=12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad
+ARG CODEX_VERSION=0.160.1
+ARG CODEX_SHA256_ARM64=fbbaec80443919f86dd63648a0b62759cf6f1d0e09310602fde96885e0bceb3e
+ARG CODEX_SHA256_AMD64=f34a4d2301892ae96c90097786bfe5dc269f187b6f69faf42a7b357b8c081e35
 RUN set -eux; \
     npm install -g --no-fund --no-audit "@openai/codex@${CODEX_VERSION}"; \
     case "$(dpkg --print-architecture)" in arm64) target=aarch64-unknown-linux-musl; want="${CODEX_SHA256_ARM64}" ;; amd64) target=x86_64-unknown-linux-musl; want="${CODEX_SHA256_AMD64}" ;; *) exit 1 ;; esac; \
