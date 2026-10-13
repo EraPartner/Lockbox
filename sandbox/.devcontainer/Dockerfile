@@ -85,9 +85,9 @@ RUN printf 'export PATH="/usr/local/share/npm-global/bin:/opt/python/bin:/usr/lo
 # --- Claude Code CLI ----------------------------------------------------------
 # Root-owned and pinned from tool-pins.env. Hash the native optional-dependency
 # payload and restore it when npm leaves the wrapper stub.
-ARG CLAUDE_CODE_VERSION=2.1.287
-ARG CLAUDE_CODE_SHA256_ARM64=e4daf793d1e74fb0d9874dd09e98690bbfd7be515f78a87fd05b9e2b4bb33b03
-ARG CLAUDE_CODE_SHA256_AMD64=3920489a5109cff5786a1a392c25277408ff22bc796d5edb9c16a60e5a1718f0
+ARG CLAUDE_CODE_VERSION=2.1.296
+ARG CLAUDE_CODE_SHA256_ARM64=f1f6e96e0d8342b9dbf41d7e88255397a6a52ce3d8736ad6a4c6b59c9b62fefa
+ARG CLAUDE_CODE_SHA256_AMD64=24972e3bc859fab2b46ed4c1e51f7d6130f06d3bd550811a114640de3370d0de
 RUN set -eux; \
     npm install -g --no-fund --no-audit "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"; \
     case "$(dpkg --print-architecture)" in arm64) na=linux-arm64; want="${CLAUDE_CODE_SHA256_ARM64}" ;; amd64) na=linux-x64; want="${CLAUDE_CODE_SHA256_AMD64}" ;; *) exit 1 ;; esac; \
@@ -109,9 +109,9 @@ RUN set -eux; \
     claude --version
 
 # --- OpenAI Codex CLI --------------------------------------------------------
-ARG CODEX_VERSION=0.160.0
-ARG CODEX_SHA256_ARM64=50b06603bdcdac39b714f5c3e68583c002b8ad8779ebfdaaf4932ff016b379c0
-ARG CODEX_SHA256_AMD64=12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad
+ARG CODEX_VERSION=0.162.1
+ARG CODEX_SHA256_ARM64=071cbe8d821cf1b02b6d8ba6c8b7991b228fcb8519dcb68a37d31222bb8cabe5
+ARG CODEX_SHA256_AMD64=628e35487d888a28f0427fc37501da529dd3d81fcbad7a2c3421c1e8670d92e1
 RUN set -eux; \
     npm install -g --no-fund --no-audit "@openai/codex@${CODEX_VERSION}"; \
     case "$(dpkg --print-architecture)" in arm64) target=aarch64-unknown-linux-musl; want="${CODEX_SHA256_ARM64}" ;; amd64) target=x86_64-unknown-linux-musl; want="${CODEX_SHA256_AMD64}" ;; *) exit 1 ;; esac; \
@@ -127,7 +127,7 @@ RUN set -eux; \
 # BAKED, not installed at runtime: post-create.sh used to `npm i -g` this unpinned
 # inside the security boundary, BEFORE it could screen anything. LIMIT: its 8
 # transitive deps are not hash-pinned — a reviewed version pin, not a closure pin.
-ARG SAFE_CHAIN_VERSION=1.5.24
+ARG SAFE_CHAIN_VERSION=1.5.25
 RUN npm install -g --no-fund --no-audit "@aikidosec/safe-chain@${SAFE_CHAIN_VERSION}" \
   && command -v safe-chain
 RUN safe-chain --version 2>/dev/null || true
