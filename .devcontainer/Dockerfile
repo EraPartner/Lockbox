@@ -34,7 +34,7 @@ RUN install -d -m 0755 /etc/apt/keyrings \
 # /usr/local, plus a dev-OWNED global npm prefix so the `dev` user can still
 # `npm i -g` at runtime (safe-chain in post-create) — the equivalent of the
 # feature's group-writable nvm dir. Bump NODE_VERSION deliberately to update.
-ARG NODE_VERSION=24.21.0
+ARG NODE_VERSION=24.22.0
 RUN set -eux; \
     arch="$(dpkg --print-architecture)"; \
     case "$arch" in amd64) na=x64 ;; arm64) na=arm64 ;; *) echo "unsupported arch $arch" >&2; exit 1 ;; esac; \
@@ -106,9 +106,9 @@ RUN printf 'export PATH="/usr/local/share/npm-global/bin:/opt/python/bin:/usr/lo
 # wrapper; the real binary is a per-arch optional dep that postinstall copies to
 # bin/claude.exe. We hash the PAYLOAD, restore it if postinstall was blocked
 # (npm >= 12 leaves a 500-byte stub), then re-check PATH. Fail-closed.
-ARG CLAUDE_CODE_VERSION=2.1.287
-ARG CLAUDE_CODE_SHA256_ARM64=e4daf793d1e74fb0d9874dd09e98690bbfd7be515f78a87fd05b9e2b4bb33b03
-ARG CLAUDE_CODE_SHA256_AMD64=3920489a5109cff5786a1a392c25277408ff22bc796d5edb9c16a60e5a1718f0
+ARG CLAUDE_CODE_VERSION=2.1.304
+ARG CLAUDE_CODE_SHA256_ARM64=c487117526509ab6d2ee6013e14f181faf68d6d6afe6bb0d4b2b4a9feca5ecb3
+ARG CLAUDE_CODE_SHA256_AMD64=ea0f135784631619a7a409d07322ecec964f9cc4fd377508ed1ba3f141f27912
 RUN set -eux; \
     npm install -g --no-fund --no-audit "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"; \
     case "$(dpkg --print-architecture)" in arm64) na=linux-arm64; want="${CLAUDE_CODE_SHA256_ARM64}" ;; amd64) na=linux-x64; want="${CLAUDE_CODE_SHA256_AMD64}" ;; *) exit 1 ;; esac; \
@@ -130,9 +130,9 @@ RUN set -eux; \
     claude --version
 
 # --- OpenAI Codex CLI (native payload hash-pinned per architecture) ----------
-ARG CODEX_VERSION=0.160.0
-ARG CODEX_SHA256_ARM64=50b06603bdcdac39b714f5c3e68583c002b8ad8779ebfdaaf4932ff016b379c0
-ARG CODEX_SHA256_AMD64=12eb3e81114588aca3b7998f4f19e8997b056aca08e57a7ca7c8a3ec8c652aad
+ARG CODEX_VERSION=0.163.0
+ARG CODEX_SHA256_ARM64=8a96f66d059d653e68bfd5f3c79337e6f1d7d170d80bf705eb7d0249b34c0ece
+ARG CODEX_SHA256_AMD64=399ff69c431c066e40de318fba45c2b07f45a76b19939d247ee4828fc70c4215
 RUN set -eux; \
     npm install -g --no-fund --no-audit "@openai/codex@${CODEX_VERSION}"; \
     case "$(dpkg --print-architecture)" in arm64) target=aarch64-unknown-linux-musl; want="${CODEX_SHA256_ARM64}" ;; amd64) target=x86_64-unknown-linux-musl; want="${CODEX_SHA256_AMD64}" ;; *) exit 1 ;; esac; \
@@ -148,7 +148,7 @@ RUN set -eux; \
 # BAKED, not installed at runtime: post-create.sh used to `npm i -g` this unpinned
 # inside the security boundary, BEFORE it could screen anything. LIMIT: its 8
 # transitive deps are not hash-pinned — a reviewed version pin, not a closure pin.
-ARG SAFE_CHAIN_VERSION=1.5.24
+ARG SAFE_CHAIN_VERSION=1.5.25
 RUN npm install -g --no-fund --no-audit "@aikidosec/safe-chain@${SAFE_CHAIN_VERSION}" \
   && command -v safe-chain
 RUN safe-chain --version 2>/dev/null || true
