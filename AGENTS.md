@@ -7,6 +7,13 @@ reaches all of them. Read `REVIEW.md` before proposing or committing a change.
 The global working agreement applies (signing, publication, safety); this file lists
 LockBox-specific rules only.
 
+## Status
+
+**Unmaintained since 2026-10-20.** See the notice at the top of `README.md`. Do not
+start new work here unless the user explicitly resumes maintenance. Scheduled
+workflows and Dependabot version updates are disabled on purpose; do not re-enable
+them as cleanup.
+
 ## Project
 
 LockBox is the **canonical devcontainer egress lock and shared launcher helpers** for
@@ -95,7 +102,8 @@ See `docs/provider-configuration.md` for sources, refresh and limits.
 - **Tool pins:** versions and hashes live in `tool-pins.env`, mirrored as Dockerfile
   `ARG` defaults. `make pins-report` shows staleness, `./bump-pins.sh` dry-runs, and
   `make pins` resolves, rehashes and rewrites both. Review the diff, then run
-  `make check` and `make test`. The weekly `bump-pins.yml` workflow opens a PR.
+  `make check` and `make test`. The `bump-pins.yml` workflow opens a PR when run
+  manually; its weekly schedule is off while the project is unmaintained.
 - **Release:** bump `VERSION`, `./sync.sh` (restamps copies), update `CHANGELOG.md`,
   tag `v<VERSION>`.
 

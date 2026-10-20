@@ -20,10 +20,10 @@ name: Bump toolchain pins
 # the entire point: the hashes in the diff are the reviewed anchor for what the
 # image is allowed to execute.
 
+# The weekly schedule (Tuesday 05:00 UTC) was removed when the project became
+# unmaintained (2026-10-20): nobody reviews the PRs it would open. Manual
+# dispatch still works for a maintainer or fork.
 on:
-  schedule:
-    # Weekly, Tuesday 05:00 UTC — staggered off CI (Mon 04:00) and CodeQL (03:00).
-    - cron: "0 5 * * 2"
   workflow_dispatch:
 
 permissions: {}

@@ -12,7 +12,8 @@ name: CodeQL
 # Dockerfile cannot produce different CodeQL results, and previously still ran a
 # full ~1.5-3 min analysis. Safe because "CI Complete" (in ci.yml), not CodeQL,
 # is the required branch-protection check — a skipped run can't deadlock merges.
-# The weekly schedule still covers query-pack updates on an unchanged repo.
+# The weekly schedule (Monday 03:00 UTC) was removed when the project became
+# unmaintained (2026-10-20); use workflow_dispatch for an on-demand full scan.
 on:
   push:
     branches: [main]
@@ -24,12 +25,10 @@ on:
     paths:
       - ".github/workflows/**"
       - ".github/codeql/**"
-  schedule:
-    - cron: "0 3 * * 1" # weekly, Monday 03:00 UTC — full scan even without code changes
+  workflow_dispatch:
 
 # Cancel a superseded run when new commits land on the same ref, so rapid pushes
-# don't queue overlapping CodeQL analyses (mirrors ci.yml). The weekly schedule runs
-# on `main`, so its group key differs from PR refs and won't be cancelled by them.
+# don't queue overlapping CodeQL analyses (mirrors ci.yml).
 concurrency:
   group: codeql-${{ github.ref }}
   cancel-in-progress: true

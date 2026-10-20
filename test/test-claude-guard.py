@@ -105,7 +105,8 @@ class GuardTests(unittest.TestCase):
 
     def test_exact_reviewed_pin_manifest_is_readable(self):
         for command, cwd in (
-            ("cat tool-pins.env", None),
+            # Explicit cwd: the process-cwd fallback depends on the checkout path.
+            ("cat tool-pins.env", "/workspaces/LockBox"),
             ("cat ./tool-pins.env", "/Users/computer/Code/LockBox"),
             ('cat "tool-pins.env"', "/workspaces/LockBox"),
             ("cat /Users/computer/Code/LockBox/tool-pins.env", "/tmp"),

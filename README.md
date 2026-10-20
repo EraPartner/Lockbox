@@ -1,5 +1,21 @@
 # LockBox
 
+> [!WARNING]
+> **LockBox is no longer maintained (since 2026-10-20).** The code is left in a
+> stable, tested state, but nobody reviews issues or pull requests, updates tool
+> pins, base images or allowlists, or responds to security reports.
+>
+> - The baked toolchain (Claude Code, Codex, Node.js, Python, safe-chain) and the
+>   Debian base images are frozen at the versions in [`tool-pins.env`](tool-pins.env)
+>   and the Dockerfiles. They will age and collect known vulnerabilities.
+> - Scheduled automation is off: no weekly pin-bump pull requests, no Dependabot
+>   version updates, and no weekly CI or CodeQL rescans. The workflows still run on
+>   push, on pull request, and on manual dispatch.
+> - Before you rely on it, fork it, run `make pins` and rebuild, and take over the
+>   review duties in [`REVIEW.md`](REVIEW.md).
+>
+> The rest of this document describes the project as it was last maintained.
+
 LockBox is a canonical egress policy and launcher toolkit for hardened coding-agent
 sandboxes. It keeps the firewall, HTTPS allowlist proxy, and shared launcher logic in
 one repository, then vendors reviewed copies into every managed `.devcontainer`.
@@ -270,7 +286,8 @@ Useful targets:
 
 The pin updater defaults to a zero-day release cooldown. `COOLDOWN_DAYS` in
 `tool-pins.env` controls the configured policy; updates still require review and
-validation before publication.
+validation before publication. The weekly `bump-pins.yml` schedule is disabled
+because the project is unmaintained; run the workflow manually or use `make pins`.
 Node.js remains within its pinned major version; crossing a major version is a
 deliberate platform decision. Some operating-system packages are not version-pinned
 because mirrors remove old builds, so the launch gate
@@ -350,6 +367,11 @@ mounts and use the minimal capability set documented in
 invariants, not optional examples.
 
 ## Release process
+
+No further releases are planned (see the maintenance notice at the top). The last
+tag is `v0.1.0`; later changes are on `main` only and are listed in
+[`CHANGELOG.md`](CHANGELOG.md). A fork that resumes releases should follow the steps
+below.
 
 For a release, update `VERSION` and `CHANGELOG.md`, run `./sync.sh` so every provenance
 stamp changes, complete the required checks, and create the matching `v<VERSION>` tag

@@ -6,7 +6,25 @@ All notable changes to LockBox are documented here. The format is based on
 [`VERSION`](VERSION); `sync.sh` stamps it (with each canonical file's SHA-256) into
 every vendored copy, so a baked container self-identifies its egress-lock generation.
 
-## [Unreleased]
+## Final state of `main` — 2026-10-20 (untagged)
+
+These changes are on `main` but were never tagged. `VERSION` stays `0.1.0`, so
+vendored copies still carry `0.1.0` provenance stamps; their per-file SHA-256 values
+identify the exact content.
+
+### Project status — no longer maintained
+
+- LockBox is unmaintained from 2026-10-20. `README.md` and `AGENTS.md` carry the
+  notice.
+- Scheduled automation is disabled: the weekly `bump-pins.yml` run, the weekly CI
+  and CodeQL rescans, and Dependabot version updates. Push, pull request and manual
+  dispatch triggers still work.
+- The final pending bot updates were merged: toolchain pins from 2026-10-20
+  (Claude Code 2.1.304, Codex 0.163.0, safe-chain 1.5.25, Node.js 24.22.0), the
+  generic sandbox Debian base digest, and the CodeQL action update.
+- The guard regression test for the reviewed pin manifest no longer depends on the
+  checkout path. It used the process working directory, which matched the reviewed
+  path only on the original host, so it failed in CI checkouts.
 
 ### Fixed — Claude migration health checks
 

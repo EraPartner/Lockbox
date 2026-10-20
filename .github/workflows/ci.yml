@@ -31,14 +31,11 @@ on:
   # matches codeql.yml so CI and CodeQL cover the same PR scope.
   pull_request:
     branches: [main]
-  schedule:
-    # Weekly re-scan (Trivy misconfig + gitleaks) against updated policy/rule DBs
-    # even when the repo is dormant. Monday 04:00 UTC, staggered from CodeQL (03:00).
-    # Only trivy-scan + secrets-scan run on this trigger — the deterministic jobs
-    # (shell/secrets/vendored/dockerfile/squid/egress-test) are gated off with
-    # `if: github.event_name != 'schedule'` since their output cannot change on a
-    # dormant repo; the gate job tolerates their `skipped` result on schedule runs.
-    - cron: "0 4 * * 1"
+  # The weekly re-scan schedule (Monday 04:00 UTC: Trivy misconfig + gitleaks
+  # against fresh rule DBs) was removed when the project became unmaintained
+  # (2026-10-20), so a dormant repo does not turn red on rule-DB drift that nobody
+  # will fix. The `github.event_name != 'schedule'` job gates and the gate job's
+  # schedule exception below are kept so a fork can restore the cron unchanged.
   workflow_dispatch:
 
 concurrency:
